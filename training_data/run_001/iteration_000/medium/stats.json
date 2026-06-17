@@ -1,0 +1,15 @@
+{
+  "iteration": 0,
+  "tier": "medium",
+  "num_games": 10,
+  "wins": 5,
+  "losses": 5,
+  "draws": 0,
+  "errors": 0,
+  "win_rate": 0.5,
+  "avg_reward": 0.5,
+  "avg_turns": 10.4,
+  "winning_trajectories": 5,
+  "filtered_trajectories": 5,
+  "elapsed_seconds": 0.12402653694152832
+}

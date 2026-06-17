@@ -1,0 +1,25 @@
+{
+  "total_games": 9,
+  "total_steps": 153,
+  "total_records": 153,
+  "wins": 9,
+  "losses": 0,
+  "avg_reward": 1.0,
+  "stats": {
+    "iteration": 0,
+    "tier": "easy",
+    "num_games": 10,
+    "wins": 9,
+    "losses": 1,
+    "draws": 0,
+    "errors": 0,
+    "win_rate": 0.9,
+    "avg_reward": 0.9,
+    "avg_turns": 9.4,
+    "winning_trajectories": 9,
+    "filtered_trajectories": 9,
+    "elapsed_seconds": 0.14706969261169434
+  },
+  "tier": "easy",
+  "iteration": 0
+}
