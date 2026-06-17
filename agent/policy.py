@@ -1,4 +1,7 @@
 import random
+import os
+
+import torch
 
 from cg.api import (
     Observation,
@@ -19,15 +22,46 @@ from cg.api import (
 )
 from cg.api import all_card_data, all_attack
 from agent.evaluate import get_card_data, get_attack_data, evaluate_state, _can_use_attack
+from agent.features import encode_observation
 
 _card_db_cache: dict[int, CardData] | None = None
+_policy_model = None
+_policy_device = "cpu"
+_policy_enabled = False
+_policy_blend = 0.7
+
+
+def load_policy_model(path: str | None = None, device: str = "cpu"):
+    global _policy_model, _policy_device, _policy_enabled
+    if path is None:
+        for candidate in [
+            "model.pt",
+            "model.pth",
+            os.path.join(os.path.dirname(__file__), "model.pt"),
+            os.path.join(os.path.dirname(__file__), "..", "model.pt"),
+            "/kaggle_simulations/agent/model.pt",
+        ]:
+            if os.path.exists(candidate):
+                path = candidate
+                break
+    if path is None or not os.path.exists(path):
+        _policy_enabled = False
+        return
+
+    from agent.network import load_model
+    try:
+        _policy_model = load_model(path, device=device)
+        _policy_device = device
+        _policy_enabled = True
+    except Exception:
+        _policy_enabled = False
 
 
 def _card_db() -> dict[int, CardData]:
     return get_card_data()
 
 
-def choose_action(obs: Observation) -> list[int]:
+def choose_action(obs: Observation, use_model: bool = True) -> list[int]:
     select = obs.select
     if select is None:
         return []
@@ -39,6 +73,60 @@ def choose_action(obs: Observation) -> list[int]:
     my_active = me.active[0] if me.active else None
     opp_active = opp.active[0] if opp.active else None
 
+    select_type = select.type
+    context = select.context
+    options = select.option
+    min_count = select.minCount
+    max_count = select.maxCount
+
+    if max_count == 0:
+        return []
+
+    if len(options) == 1:
+        return [0]
+
+    heuristic_action = _choose_action_heuristic(obs, select, state, my_index)
+
+    if use_model and _policy_enabled and _policy_model is not None and select_type in (SelectType.MAIN, SelectType.ATTACK, SelectType.CARD):
+        model_action = _choose_action_model(obs, select, heuristic_action)
+        if model_action is not None:
+            return model_action
+
+    return heuristic_action
+
+
+def _choose_action_model(obs: Observation, select: SelectData, heuristic_action: list[int]) -> list[int] | None:
+    try:
+        state_features, option_features = encode_observation(obs)
+        if not option_features or not state_features:
+            return None
+
+        from agent.network import score_actions
+        scores, value = score_actions(
+            _policy_model,
+            state_features,
+            option_features,
+            device=_policy_device,
+        )
+
+        num_options = len(option_features)
+        if num_options == 0:
+            return None
+
+        best_idx = max(range(num_options), key=lambda i: scores[i] if i < len(scores) else -1e9)
+
+        if 0 <= best_idx < num_options:
+            blend = random.random()
+            if blend < _policy_blend:
+                return [best_idx]
+            else:
+                return heuristic_action
+        return None
+    except Exception:
+        return None
+
+
+def _choose_action_heuristic(obs: Observation, select: SelectData, state: State, my_index: int) -> list[int]:
     select_type = select.type
     context = select.context
     options = select.option
