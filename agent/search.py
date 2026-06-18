@@ -10,6 +10,7 @@ from cg.api import (
 from cg.api import search_begin, search_step, search_end
 from agent.evaluate import evaluate_state, get_card_data, get_attack_data
 from agent.policy import choose_action
+from agent.opponent_model import get_opponent_model
 
 
 def mcts_search(
@@ -511,7 +512,9 @@ def build_search_inputs(obs: Observation) -> dict:
     my_index = obs.current.yourIndex
     me = obs.current.players[my_index]
     opp = obs.current.players[1 - my_index]
-    all_card_ids = list(get_card_data().keys())
+
+    opp_model = get_opponent_model(1 - my_index)
+    opp_model.update(opp)
 
     default_energy = _energy_type_to_card_id(_infer_opponent_energy(opp))
 
@@ -522,10 +525,10 @@ def build_search_inputs(obs: Observation) -> dict:
     else:
         your_deck_list = [default_energy] * me.deckCount
 
-    opp_deck = predict_opponent_deck(all_card_ids, opp)
-    opp_prize = predict_opponent_prize(opp)
-    opp_hand = predict_opponent_hand(opp)
-    opp_active = predict_opponent_active(opp)
+    opp_deck = opp_model.sample_deck(opp)
+    opp_prize = opp_model.predict_prize(opp)
+    opp_hand = opp_model.predict_hand(opp)
+    opp_active = opp_model.predict_active(opp)
 
     return {
         "your_deck": your_deck_list,

@@ -4,8 +4,10 @@ import random
 from cg.api import Observation, to_observation_class, SelectType, SelectContext
 from agent.policy import choose_action
 from agent.deck import load_deck_csv, get_default_deck, save_deck_csv
+from agent.opponent_model import reset_opponent_models
 
 _deck_cache: list[int] | None = None
+_last_game_id: int = -1
 
 
 def read_deck() -> list[int]:
@@ -22,11 +24,19 @@ def read_deck() -> list[int]:
 
 
 def agent(obs_dict: dict) -> list[int]:
+    global _last_game_id
+
     if not obs_dict or 'select' not in obs_dict:
         deck = read_deck()
+        reset_opponent_models()
+        _last_game_id = -1
         return deck
 
     obs: Observation = to_observation_class(obs_dict)
+
+    if obs.current is not None and obs.current.turn == 0 and _last_game_id != 0:
+        reset_opponent_models()
+        _last_game_id = 0
 
     if obs.select is None:
         deck = read_deck()
