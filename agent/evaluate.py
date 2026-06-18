@@ -57,6 +57,8 @@ def evaluate_state(state: State, my_index: int) -> float:
     score += _energy_score(me)
     score += _hand_score(me, opp, state)
     score += _special_condition_score(me, opp)
+    score += _knockout_threat_score(me, opp)
+    score += _deck_out_score(me, opp)
 
     return score
 
@@ -70,7 +72,10 @@ def _prize_score(me: PlayerState, opp: PlayerState) -> float:
         return 5000.0
     if my_taken >= 6:
         return -5000.0
-    return (opp_taken - my_taken) * 200.0 + opp_taken * 80.0
+
+    base = (opp_taken - my_taken) * 200.0
+    acceleration = opp_taken * opp_taken * 30.0
+    return base + acceleration
 
 
 def _board_score(me: PlayerState, opp: PlayerState) -> float:
@@ -88,8 +93,13 @@ def _board_score(me: PlayerState, opp: PlayerState) -> float:
     elif my_active is None:
         score -= 300.0
 
-    score += len(me.bench) * 30.0
-    score -= len(opp.bench) * 20.0
+    my_bench_size = len(me.bench)
+    opp_bench_size = len(opp.bench)
+    score += my_bench_size * 30.0
+    score -= opp_bench_size * 20.0
+
+    if opp_active is None and 0 < opp_bench_size < 3:
+        score += (3 - opp_bench_size) * 50.0
 
     card_db = get_card_data()
     if my_active is not None:
@@ -100,6 +110,8 @@ def _board_score(me: PlayerState, opp: PlayerState) -> float:
             if cd.stage2:
                 score += 30.0
             elif cd.stage1:
+                score += 15.0
+            if cd.hp and cd.hp > 200:
                 score += 15.0
 
     return score
@@ -113,10 +125,20 @@ def _hp_score(me: PlayerState, opp: PlayerState) -> float:
     if my_active is not None and my_active.maxHp > 0:
         hp_ratio = my_active.hp / my_active.maxHp
         score += hp_ratio * 60.0
+
+        if my_active.hp <= 10 and len(me.bench) > 0:
+            score -= 40.0
+
     if opp_active is not None and opp_active.maxHp > 0:
         opp_hp_ratio = opp_active.hp / opp_active.maxHp
         score -= opp_hp_ratio * 20.0
         score += (1.0 - opp_hp_ratio) * 40.0
+
+        if opp_active.hp <= 30:
+            score += 60.0
+
+        if opp_active.hp <= 0:
+            score += 500.0
 
     for mon in me.bench:
         if mon.maxHp > 0:
@@ -197,6 +219,8 @@ def _hand_score(me: PlayerState, opp: PlayerState, state: State) -> float:
     deck_ratio = me.deckCount / 60.0 if me.deckCount > 0 else 0
     if deck_ratio < 0.1:
         score -= 50.0
+    if deck_ratio < 0.05:
+        score -= 200.0
 
     return score
 
@@ -224,5 +248,64 @@ def _special_condition_score(me: PlayerState, opp: PlayerState) -> float:
         score += 20.0
     if opp.confused:
         score += 8.0
+
+    my_active = me.active[0] if me.active else None
+    if my_active is not None:
+        status_count = sum([me.poisoned, me.burned, me.asleep, me.paralyzed, me.confused])
+        if status_count >= 2:
+            score -= 25.0
+
+    return score
+
+
+def _knockout_threat_score(me: PlayerState, opp: PlayerState) -> float:
+    score = 0.0
+    opp_active = opp.active[0] if opp.active else None
+    my_active = me.active[0] if me.active else None
+
+    if my_active is not None and opp_active is not None and my_active.maxHp > 0:
+        attack_db = get_attack_data()
+        card_db = get_card_data()
+        cd = card_db.get(my_active.id)
+
+        if cd and cd.attacks:
+            max_damage = 0
+            for atk_id in cd.attacks:
+                atk = attack_db.get(atk_id)
+                if atk and _can_use_attack(my_active, atk):
+                    if atk.damage > max_damage:
+                        max_damage = atk.damage
+
+            if max_damage >= opp_active.hp:
+                score += 400.0
+
+            if max_damage >= opp_active.hp * 0.8:
+                score += 100.0
+
+            if opp_active.hp <= 30 and my_active.hp > 0:
+                score += 80.0
+
+    if opp_active is None and len(opp.bench) == 1:
+        score += 200.0
+
+    return score
+
+
+def _deck_out_score(me: PlayerState, opp: PlayerState) -> float:
+    score = 0.0
+
+    if me.deckCount == 0:
+        score -= 3000.0
+    elif me.deckCount <= 3:
+        score -= 200.0
+    elif me.deckCount <= 6:
+        score -= 30.0
+
+    if opp.deckCount == 0:
+        score += 3000.0
+    elif opp.deckCount <= 3:
+        score += 200.0
+    elif opp.deckCount <= 6:
+        score += 30.0
 
     return score

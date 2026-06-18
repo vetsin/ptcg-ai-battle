@@ -3,9 +3,12 @@ from cg.api import (
     Observation,
     PlayerState,
     SelectType,
+    OptionType,
+    CardType,
+    EnergyType,
 )
 from cg.api import search_begin, search_step, search_end
-from agent.evaluate import evaluate_state, get_card_data
+from agent.evaluate import evaluate_state, get_card_data, get_attack_data
 from agent.policy import choose_action
 
 
@@ -27,6 +30,9 @@ def mcts_search(
         return None
 
     my_index = obs.current.yourIndex
+
+    max_sims = _adaptive_sim_budget(obs, max_simulations)
+    max_time = _adaptive_time_budget(obs, max_time_ms)
 
     try:
         root_state = search_begin(
@@ -58,7 +64,7 @@ def mcts_search(
 
     child_stats: dict[int, dict] = {}
 
-    for i in range(min(n_options, 8)):
+    for i in range(min(n_options, 10)):
         action = _compute_action_for_option(root_obs, i)
         if action is None:
             continue
@@ -78,6 +84,8 @@ def mcts_search(
             if child_obs.current.result != -1:
                 child_value = 10000.0 if child_obs.current.result == my_index else -10000.0
 
+        outcome_group = _classify_outcome(root_value, child_value)
+
         child_stats[i] = {
             "action": action,
             "value": child_value,
@@ -85,7 +93,14 @@ def mcts_search(
             "search_id": child_state.searchId,
             "observation": child_obs,
             "is_terminal": child_obs.select is None or child_obs.current is None or child_obs.current.result != -1,
+            "outcome_group": outcome_group,
         }
+
+    if not child_stats:
+        search_end()
+        return _get_heuristic_action(root_obs)
+
+    _prune_dominated(child_stats)
 
     if not child_stats:
         search_end()
@@ -93,13 +108,15 @@ def mcts_search(
 
     start_time = time.time()
     simulations = 0
+    exploration = 1.414
+    rollout_depth = _adaptive_rollout_depth(obs, 5)
 
-    while simulations < max_simulations:
+    while simulations < max_sims:
         elapsed_ms = (time.time() - start_time) * 1000
-        if elapsed_ms > max_time_ms:
+        if elapsed_ms > max_time:
             break
 
-        best_idx = _select_root_child(child_stats, root_value, exploration=1.414)
+        best_idx = _select_root_child(child_stats, root_value, exploration)
         if best_idx is None:
             break
 
@@ -111,11 +128,17 @@ def mcts_search(
             continue
 
         rollout_value = _rollout_from_node(
-            stats["search_id"], stats["observation"], my_index, max_depth=5,
+            stats["search_id"], stats["observation"], my_index, max_depth=rollout_depth,
         )
         stats["visits"] += 1
         stats["value"] = stats["value"] * (stats["visits"] - 1) / stats["visits"] + rollout_value / stats["visits"]
         simulations += 1
+
+        total_v = sum(s["visits"] for s in child_stats.values())
+        if total_v >= 8:
+            best_v = max(s["visits"] for s in child_stats.values())
+            if best_v / total_v > 0.65:
+                break
 
     search_end()
 
@@ -130,6 +153,92 @@ def mcts_search(
         return best_action
 
     return _get_heuristic_action(root_obs)
+
+
+def _adaptive_sim_budget(obs: Observation, base: int) -> int:
+    if obs.current is None:
+        return base
+    me = obs.current.players[obs.current.yourIndex]
+    opp = obs.current.players[1 - obs.current.yourIndex]
+    my_taken = 6 - len([p for p in me.prize if p is not None])
+    opp_taken = 6 - len([p for p in opp.prize if p is not None])
+    opp_active = opp.active[0] if opp.active else None
+
+    if opp_taken >= 3 or my_taken >= 3:
+        return int(base * 1.5)
+
+    if opp_active and opp_active.maxHp > 0 and opp_active.hp * 2 <= opp_active.maxHp:
+        return int(base * 1.2)
+
+    if obs.select and obs.select.type == SelectType.ATTACK:
+        return int(base * 1.3)
+
+    if obs.select and len(obs.select.option) <= 3:
+        return int(base * 0.6)
+
+    return base
+
+
+def _adaptive_time_budget(obs: Observation, base_ms: float) -> float:
+    if obs.current is None:
+        return base_ms
+    me = obs.current.players[obs.current.yourIndex]
+    opp = obs.current.players[1 - obs.current.yourIndex]
+    my_taken = 6 - len([p for p in me.prize if p is not None])
+    opp_taken = 6 - len([p for p in opp.prize if p is not None])
+
+    if opp_taken >= 3 or my_taken >= 3:
+        return base_ms * 1.5
+    return base_ms
+
+
+def _adaptive_rollout_depth(obs: Observation, base: int) -> int:
+    if obs.current is None:
+        return base
+    me = obs.current.players[obs.current.yourIndex]
+    opp = obs.current.players[1 - obs.current.yourIndex]
+    my_taken = 6 - len([p for p in me.prize if p is not None])
+    opp_taken = 6 - len([p for p in opp.prize if p is not None])
+
+    if opp_taken >= 3 or my_taken >= 3:
+        return base + 5
+    if opp_taken >= 2 and my_taken >= 2:
+        return base + 3
+    return base
+
+
+def _classify_outcome(root_value: float, child_value: float) -> str:
+    delta = child_value - root_value
+    if child_value >= 9000.0:
+        return "win"
+    if child_value <= -9000.0:
+        return "loss"
+    if delta > 500.0:
+        return "big_gain"
+    if delta > 100.0:
+        return "small_gain"
+    if delta < -500.0:
+        return "big_loss"
+    if delta < -100.0:
+        return "small_loss"
+    return "neutral"
+
+
+def _prune_dominated(child_stats: dict[int, dict]) -> None:
+    if len(child_stats) <= 4:
+        return
+
+    loss_indices = [i for i, s in child_stats.items() if s["outcome_group"] == "loss"]
+    for idx in loss_indices:
+        del child_stats[idx]
+
+    if len(child_stats) <= 4:
+        return
+
+    big_loss_indices = [i for i, s in child_stats.items() if s["outcome_group"] == "big_loss"]
+    for idx in big_loss_indices:
+        if len(child_stats) > 4:
+            del child_stats[idx]
 
 
 def _select_root_child(child_stats: dict[int, dict], root_value: float, exploration: float = 1.414) -> int | None:
@@ -259,47 +368,140 @@ def _get_heuristic_action(obs: Observation) -> list[int] | None:
         return None
 
 
-def predict_opponent_deck(all_card_ids: list[int], opp: PlayerState) -> list[int]:
-    known: set[int] = set()
-    if opp.discard:
-        for card in opp.discard:
-            known.add(card.id)
+def _energy_type_to_card_id(energy_type: int) -> int:
+    mapping = {
+        1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8,
+    }
+    return mapping.get(int(energy_type), 2)
+
+
+def _infer_opponent_energy(opp: PlayerState) -> int:
+    card_db = get_card_data()
+    energy_counts: dict[int, int] = {}
+
+    pokemon_ids = set()
     if opp.active:
         for mon in opp.active:
             if mon is not None:
-                known.add(mon.id)
+                pokemon_ids.add(mon.id)
     if opp.bench:
         for mon in opp.bench:
-            known.add(mon.id)
+            pokemon_ids.add(mon.id)
 
-    remaining = 60 - len(known)
-    pool = [cid for cid in all_card_ids if cid not in known]
-    if not pool:
-        return list(known) + [3] * max(0, remaining)
+    for pid in pokemon_ids:
+        cd = card_db.get(pid)
+        if cd and cd.attacks:
+            attack_db = get_attack_data()
+            for atk_id in cd.attacks:
+                atk = attack_db.get(atk_id)
+                if atk:
+                    for e in atk.energies:
+                        e_int = int(e)
+                        if e_int in (1, 2, 3, 4, 5, 6, 7, 8):
+                            energy_counts[e_int] = energy_counts.get(e_int, 0) + 1
 
-    repeats = (remaining // len(pool)) + 1
-    filler = (pool * repeats)[:remaining]
-    return list(known) + filler
+    if energy_counts:
+        return max(energy_counts, key=energy_counts.get)
+    return 2
+
+
+def _get_opponent_known_cards(opp: PlayerState) -> list[int]:
+    known: list[int] = []
+    if opp.discard:
+        for card in opp.discard:
+            known.append(card.id)
+    if opp.active:
+        for mon in opp.active:
+            if mon is not None:
+                known.append(mon.id)
+    if opp.bench:
+        for mon in opp.bench:
+            known.append(mon.id)
+    for p in opp.prize:
+        if p is not None:
+            known.append(p.id)
+    return known
+
+
+def predict_opponent_deck(all_card_ids: list[int], opp: PlayerState) -> list[int]:
+    known_set: set[int] = set()
+    known_list: list[int] = []
+
+    if opp.discard:
+        for card in opp.discard:
+            known_set.add(card.id)
+            known_list.append(card.id)
+    if opp.active:
+        for mon in opp.active:
+            if mon is not None:
+                known_set.add(mon.id)
+                known_list.append(mon.id)
+    if opp.bench:
+        for mon in opp.bench:
+            known_set.add(mon.id)
+            known_list.append(mon.id)
+
+    default_energy = _energy_type_to_card_id(_infer_opponent_energy(opp))
+
+    filler_energy = [default_energy] * 15
+    card_db = get_card_data()
+    basic_pokemon = []
+    for cid in all_card_ids:
+        cd = card_db.get(cid)
+        if cd and cd.cardType == CardType.POKEMON and cd.basic:
+            if cid not in known_set:
+                basic_pokemon.append(cid)
+
+    filler_pokemon = []
+    if basic_pokemon:
+        step = max(1, len(basic_pokemon) // 8)
+        for i in range(0, len(basic_pokemon), step):
+            filler_pokemon.append(basic_pokemon[i])
+        filler_pokemon = filler_pokemon[:3]
+
+    remaining = 60 - len(known_list)
+    filler = (filler_energy + filler_pokemon + [default_energy] * 20)
+    while len(filler) < remaining:
+        filler = filler + filler
+    filler = filler[:remaining]
+
+    return known_list + filler
 
 
 def predict_opponent_hand(opp: PlayerState) -> list[int]:
-    return [3] * opp.handCount
+    default_energy = _energy_type_to_card_id(_infer_opponent_energy(opp))
+    n = opp.handCount
+    if n <= 0:
+        return []
+
+    hand = [default_energy] * max(1, n * 2 // 3)
+    hand.extend([default_energy] * (n - len(hand)))
+    return hand[:n]
 
 
 def predict_opponent_prize(opp: PlayerState) -> list[int]:
+    default_energy = _energy_type_to_card_id(_infer_opponent_energy(opp))
     result = []
     for p in opp.prize:
         if p is not None:
             result.append(p.id)
         else:
-            result.append(3)
+            result.append(default_energy)
     return result
 
 
 def predict_opponent_active(opp: PlayerState) -> list[int]:
     if opp.active and len(opp.active) > 0 and opp.active[0] is not None:
         return []
-    return [3]
+    if opp.bench:
+        return [opp.bench[0].id]
+    card_db = get_card_data()
+    default_energy = _energy_type_to_card_id(_infer_opponent_energy(opp))
+    basics = [cid for cid, cd in card_db.items()
+              if cd.cardType == CardType.POKEMON and cd.basic and cd.energyType == int(EnergyType.FIRE)]
+    if basics:
+        return [basics[0]]
+    return [1145]
 
 
 def build_search_inputs(obs: Observation) -> dict:
@@ -311,12 +513,14 @@ def build_search_inputs(obs: Observation) -> dict:
     opp = obs.current.players[1 - my_index]
     all_card_ids = list(get_card_data().keys())
 
-    your_prize = [3 if p is None else p.id for p in me.prize]
+    default_energy = _energy_type_to_card_id(_infer_opponent_energy(opp))
+
+    your_prize = [default_energy if p is None else p.id for p in me.prize]
 
     if obs.select.deck:
         your_deck_list = [c.id for c in obs.select.deck]
     else:
-        your_deck_list = [3] * me.deckCount
+        your_deck_list = [default_energy] * me.deckCount
 
     opp_deck = predict_opponent_deck(all_card_ids, opp)
     opp_prize = predict_opponent_prize(opp)
