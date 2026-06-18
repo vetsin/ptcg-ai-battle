@@ -1,0 +1,265 @@
+{
+  "name": "base",
+  "deck": [
+    46,
+    46,
+    46,
+    46,
+    788,
+    788,
+    788,
+    788,
+    790,
+    790,
+    1079,
+    1079,
+    1079,
+    1079,
+    1121,
+    1121,
+    1121,
+    1121,
+    1182,
+    1182,
+    1182,
+    1182,
+    1123,
+    1123,
+    1123,
+    1123,
+    1086,
+    1086,
+    1086,
+    1086,
+    1227,
+    1227,
+    1097,
+    1097,
+    1232,
+    1232,
+    1119,
+    1119,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "results": {
+    "base": {
+      "overall_win_rate": 0.8166666666666667,
+      "total_wins": 49,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 16,
+          "played": 20,
+          "win_rate": 0.8
+        },
+        "hard": {
+          "wins": 16,
+          "played": 20,
+          "win_rate": 0.8
+        },
+        "easy": {
+          "wins": 17,
+          "played": 20,
+          "win_rate": 0.85
+        }
+      }
+    },
+    "boss_orders_3": {
+      "overall_win_rate": 0.6833333333333333,
+      "total_wins": 41,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 12,
+          "played": 20,
+          "win_rate": 0.6
+        },
+        "hard": {
+          "wins": 12,
+          "played": 20,
+          "win_rate": 0.6
+        },
+        "easy": {
+          "wins": 17,
+          "played": 20,
+          "win_rate": 0.85
+        }
+      }
+    },
+    "boss_orders_2": {
+      "overall_win_rate": 0.8,
+      "total_wins": 48,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 17,
+          "played": 20,
+          "win_rate": 0.85
+        },
+        "hard": {
+          "wins": 18,
+          "played": 20,
+          "win_rate": 0.9
+        },
+        "easy": {
+          "wins": 13,
+          "played": 20,
+          "win_rate": 0.65
+        }
+      }
+    },
+    "fire_20": {
+      "overall_win_rate": 0.7833333333333333,
+      "total_wins": 47,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 15,
+          "played": 20,
+          "win_rate": 0.75
+        },
+        "hard": {
+          "wins": 13,
+          "played": 20,
+          "win_rate": 0.65
+        },
+        "easy": {
+          "wins": 19,
+          "played": 20,
+          "win_rate": 0.95
+        }
+      }
+    },
+    "fire_24": {
+      "overall_win_rate": 0.75,
+      "total_wins": 45,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 13,
+          "played": 20,
+          "win_rate": 0.65
+        },
+        "hard": {
+          "wins": 16,
+          "played": 20,
+          "win_rate": 0.8
+        },
+        "easy": {
+          "wins": 16,
+          "played": 20,
+          "win_rate": 0.8
+        }
+      }
+    },
+    "charizard_ex": {
+      "overall_win_rate": 0.75,
+      "total_wins": 45,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 18,
+          "played": 20,
+          "win_rate": 0.9
+        },
+        "hard": {
+          "wins": 15,
+          "played": 20,
+          "win_rate": 0.75
+        },
+        "easy": {
+          "wins": 12,
+          "played": 20,
+          "win_rate": 0.6
+        }
+      }
+    },
+    "poffin_3": {
+      "overall_win_rate": 0.7333333333333333,
+      "total_wins": 44,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 15,
+          "played": 20,
+          "win_rate": 0.75
+        },
+        "hard": {
+          "wins": 12,
+          "played": 20,
+          "win_rate": 0.6
+        },
+        "easy": {
+          "wins": 17,
+          "played": 20,
+          "win_rate": 0.85
+        }
+      }
+    },
+    "switch_3": {
+      "overall_win_rate": 0.6833333333333333,
+      "total_wins": 41,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 11,
+          "played": 20,
+          "win_rate": 0.55
+        },
+        "hard": {
+          "wins": 16,
+          "played": 20,
+          "win_rate": 0.8
+        },
+        "easy": {
+          "wins": 14,
+          "played": 20,
+          "win_rate": 0.7
+        }
+      }
+    },
+    "night_stretcher_3": {
+      "overall_win_rate": 0.7333333333333333,
+      "total_wins": 44,
+      "total_games": 60,
+      "matchups": {
+        "mirror": {
+          "wins": 18,
+          "played": 20,
+          "win_rate": 0.9
+        },
+        "hard": {
+          "wins": 13,
+          "played": 20,
+          "win_rate": 0.65
+        },
+        "easy": {
+          "wins": 13,
+          "played": 20,
+          "win_rate": 0.65
+        }
+      }
+    }
+  }
+}
