@@ -29,6 +29,9 @@ _policy_model = None
 _policy_device = "cpu"
 _policy_enabled = False
 _policy_blend = 0.7
+_mcts_enabled = True
+_mcts_max_time_ms = 1500.0
+_mcts_min_options = 3
 
 
 def load_policy_model(path: str | None = None, device: str = "cpu"):
@@ -85,14 +88,25 @@ def choose_action(obs: Observation, use_model: bool = True) -> list[int]:
     if len(options) == 1:
         return [0]
 
+    if _mcts_enabled and select_type in (SelectType.MAIN, SelectType.ATTACK) and len(options) >= _mcts_min_options and obs.search_begin_input is not None:
+        mcts_action = _try_mcts(obs)
+        if mcts_action is not None:
+            return mcts_action
+
     heuristic_action = _choose_action_heuristic(obs, select, state, my_index)
 
+    action = heuristic_action
     if use_model and _policy_enabled and _policy_model is not None and select_type in (SelectType.MAIN, SelectType.ATTACK, SelectType.CARD):
         model_action = _choose_action_model(obs, select, heuristic_action)
         if model_action is not None:
-            return model_action
+            action = model_action
 
-    return heuristic_action
+    if min_count > 0 and len(action) < min_count:
+        action = list(range(min(min_count, len(options))))
+    if max_count > 0 and len(action) > max_count:
+        action = action[:max_count]
+
+    return action
 
 
 def _choose_action_model(obs: Observation, select: SelectData, heuristic_action: list[int]) -> list[int] | None:
@@ -122,6 +136,17 @@ def _choose_action_model(obs: Observation, select: SelectData, heuristic_action:
             else:
                 return heuristic_action
         return None
+    except Exception:
+        return None
+
+
+def _try_mcts(obs: Observation) -> list[int] | None:
+    try:
+        from agent.search import mcts_search, build_search_inputs
+        inputs = build_search_inputs(obs)
+        if not inputs:
+            return None
+        return mcts_search(obs, max_simulations=40, max_time_ms=_mcts_max_time_ms, **inputs)
     except Exception:
         return None
 
@@ -214,6 +239,9 @@ def _handle_main(obs: Observation, select: SelectData, state: State, my_index: i
         scored.append((score, i, opt))
 
     scored.sort(key=lambda x: -x[0])
+
+    if not scored:
+        return [0]
 
     return [scored[0][1]]
 
@@ -491,7 +519,7 @@ def _handle_card_select(obs: Observation, select: SelectData, state: State, my_i
         return _select_bench_pokemon(options, state, my_index)
 
     if context == SelectContext.DISCARD:
-        return _select_discard(options, state, my_index)
+        return _select_discard(options, state, my_index, min_count=min_count)
 
     if context == SelectContext.DAMAGE_COUNTER or context == SelectContext.DAMAGE:
         return _select_damage_target(options, state, my_index)
@@ -596,7 +624,7 @@ def _select_bench_pokemon(options: list[Option], state: State, my_index: int) ->
     return [scored[0][1]]
 
 
-def _select_discard(options: list[Option], state: State, my_index: int) -> list[int]:
+def _select_discard(options: list[Option], state: State, my_index: int, min_count: int = 1) -> list[int]:
     card_db = _card_db()
     scored = []
     for i, opt in enumerate(options):
@@ -616,8 +644,7 @@ def _select_discard(options: list[Option], state: State, my_index: int) -> list[
         scored.append((score, i))
 
     scored.sort(key=lambda x: x[0])
-    min_count = 1
-    return [scored[0][1]][:min_count]
+    return [s[1] for s in scored[:min(min_count, len(scored))]]
 
 
 def _select_damage_target(options: list[Option], state: State, my_index: int) -> list[int]:

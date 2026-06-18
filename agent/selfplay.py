@@ -384,17 +384,24 @@ def random_agent(obs_dict: dict) -> list[int]:
     if obs.select is None:
         return _default_deck()
 
+    if obs.current is not None and obs.current.result != -1:
+        return []
+
     options = obs.select.option
     min_count = obs.select.minCount
     max_count = obs.select.maxCount
+    n_opts = len(options) if options else 0
 
+    if n_opts == 0:
+        return []
     if max_count == 0:
         return []
     if len(options) == 1:
         return [0]
     if min_count == max_count and min_count > 0:
-        return list(range(min_count))
-    return random.sample(range(len(options)), min(max_count, len(options)))
+        return list(range(min(min_count, n_opts)))
+    count = max(min_count, 1)
+    return random.sample(range(n_opts), min(count, n_opts))
 
 
 _deck_cache: list[int] | None = None
@@ -412,14 +419,18 @@ def _random_action(obs: Observation) -> list[int]:
     options = obs.select.option
     min_count = obs.select.minCount
     max_count = obs.select.maxCount
+    n_opts = len(options) if options else 0
 
+    if n_opts == 0:
+        return []
     if max_count == 0:
         return []
     if len(options) == 1:
         return [0]
     if min_count == max_count and min_count > 0:
-        return list(range(min_count))
-    return random.sample(range(len(options)), min(max_count, len(options)))
+        return list(range(min(min_count, n_opts)))
+    count = max(min_count, 1)
+    return random.sample(range(n_opts), min(count, n_opts))
 
 
 def _compute_game_stats(trajectory: GameTrajectory):

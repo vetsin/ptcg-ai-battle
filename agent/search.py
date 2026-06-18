@@ -1,69 +1,28 @@
 import time
-import random
 from cg.api import (
     Observation,
-    State,
     PlayerState,
-    Pokemon,
-    Option,
-    SelectData,
-    SearchState,
-    ApiResult,
-    OptionType,
     SelectType,
-    SelectContext,
-    EnergyType,
 )
-from cg.api import search_begin, search_step, search_end, search_release
-from agent.evaluate import evaluate_state
+from cg.api import search_begin, search_step, search_end
+from agent.evaluate import evaluate_state, get_card_data
 from agent.policy import choose_action
-
-
-class MCTSNode:
-    __slots__ = ["search_id", "visit_count", "value_sum", "is_terminal", "observation", "parent_action"]
-
-    def __init__(self, search_id: int | None = None):
-        self.search_id = search_id
-        self.visit_count = 0
-        self.value_sum = 0.0
-        self.is_terminal = False
-        self.observation: Observation | None = None
-        self.parent_action: list[int] | None = None
-
-    @property
-    def value(self) -> float:
-        if self.visit_count == 0:
-            return 0.0
-        return self.value_sum / self.visit_count
-
-    @property
-    def ucb(self) -> float:
-        if self.visit_count == 0:
-            return 1e9
-        exploit = self.value
-        explore = 1.414 * (0.0 ** 0.5 / self.visit_count) if self.visit_count > 0 else 0
-        return exploit
-
-    def update(self, value: float):
-        self.visit_count += 1
-        self.value_sum += value
 
 
 def mcts_search(
     obs: Observation,
-    my_deck: list[int],
-    my_prize: list[int],
-    opp_deck: list[int],
-    opp_prize: list[int],
-    opp_hand: list[int],
-    opp_active: list[int],
-    max_simulations: int = 50,
-    max_time_ms: float = 4000.0,
+    your_deck: list[int],
+    your_prize: list[int],
+    opponent_deck: list[int],
+    opponent_prize: list[int],
+    opponent_hand: list[int],
+    opponent_active: list[int],
+    max_simulations: int = 60,
+    max_time_ms: float = 2000.0,
     manual_coin: bool = True,
 ) -> list[int] | None:
     if obs.current is None or obs.select is None:
         return None
-
     if obs.search_begin_input is None:
         return None
 
@@ -72,184 +31,255 @@ def mcts_search(
     try:
         root_state = search_begin(
             obs,
-            my_deck,
-            my_prize,
-            opp_deck,
-            opp_prize,
-            opp_hand,
-            opp_active,
+            your_deck,
+            your_prize,
+            opponent_deck,
+            opponent_prize,
+            opponent_hand,
+            opponent_active,
             manual_coin=manual_coin,
         )
     except (ValueError, RuntimeError):
         return None
 
-    root_id = root_state.searchId
     root_obs = root_state.observation
+    root_id = root_state.searchId
 
     if root_obs.select is None or root_obs.select.option is None or len(root_obs.select.option) == 0:
         search_end()
         return None
 
-    select = root_obs.select
-    if len(select.option) == 1:
+    if len(root_obs.select.option) == 1:
         search_end()
         return [0]
 
-    if select.minCount == select.maxCount and select.minCount > 0:
-        needs_full_selection = False
-        if select.type in (
-            SelectType.COUNT,
-            SelectType.ENERGY,
-            SelectType.CARD_OR_ATTACHED_CARD,
-        ):
-            if select.minCount > 1:
-                needs_full_selection = True
-        if not needs_full_selection:
-            search_end()
-            return None
+    n_options = len(root_obs.select.option)
+    root_value = evaluate_state(obs.current, my_index)
 
-    root_node = MCTSNode(search_id=root_id)
-    root_node.observation = root_obs
+    child_stats: dict[int, dict] = {}
 
-    nodes: dict[int, MCTSNode] = {root_id: root_node}
-    active_search_ids: set[int] = {root_id}
+    for i in range(min(n_options, 8)):
+        action = _compute_action_for_option(root_obs, i)
+        if action is None:
+            continue
+
+        try:
+            child_state = search_step(root_id, action)
+        except (ValueError, RuntimeError):
+            continue
+
+        child_obs = child_state.observation
+        if child_obs is None:
+            continue
+
+        child_value = root_value
+        if child_obs.current is not None:
+            child_value = evaluate_state(child_obs.current, my_index)
+            if child_obs.current.result != -1:
+                child_value = 10000.0 if child_obs.current.result == my_index else -10000.0
+
+        child_stats[i] = {
+            "action": action,
+            "value": child_value,
+            "visits": 1,
+            "search_id": child_state.searchId,
+            "observation": child_obs,
+            "is_terminal": child_obs.select is None or child_obs.current is None or child_obs.current.result != -1,
+        }
+
+    if not child_stats:
+        search_end()
+        return _get_heuristic_action(root_obs)
 
     start_time = time.time()
     simulations = 0
 
-    try:
-        while simulations < max_simulations:
-            elapsed_ms = (time.time() - start_time) * 1000
-            if elapsed_ms > max_time_ms:
-                break
+    while simulations < max_simulations:
+        elapsed_ms = (time.time() - start_time) * 1000
+        if elapsed_ms > max_time_ms:
+            break
 
-            leaf = _select_leaf(nodes, root_id)
-            if leaf is None:
-                break
+        best_idx = _select_root_child(child_stats, root_value, exploration=1.414)
+        if best_idx is None:
+            break
 
-            if leaf.is_terminal or leaf.observation is None or leaf.observation.select is None:
-                value = _evaluate_terminal(leaf, my_index)
-                _backpropagate(nodes, leaf, value, my_index)
-                simulations += 1
-                continue
+        stats = child_stats[best_idx]
 
-            actions = _get_actions_for_node(leaf, my_index)
-            if not actions:
-                leaf.is_terminal = True
-                value = _evaluate_terminal(leaf, my_index)
-                _backpropagate(nodes, leaf, value, my_index)
-                simulations += 1
-                continue
-
-            action = actions[0]
-            try:
-                child_result = search_step(leaf.search_id, action)
-                if child_result is None or child_result.error != 0:
-                    leaf.is_terminal = True
-                    value = evaluate_state(leaf.observation.current, my_index)
-                    _backpropagate(nodes, leaf, value, my_index)
-                    simulations += 1
-                    continue
-
-                child_obs = child_result.observation if child_result.state else None
-
-                child_node = MCTSNode(search_id=leaf.search_id)
-                child_node.parent_action = action
-                child_node.observation = child_obs
-
-                if child_obs is None or child_obs.select is None or child_obs.current is None:
-                    child_node.is_terminal = True
-                    value = evaluate_state(leaf.observation.current, my_index)
-                    child_node.update(value)
-                    _backpropagate(nodes, child_node, value, my_index)
-                else:
-                    value = evaluate_state(child_obs.current, my_index)
-                    child_node.update(value)
-                    _backpropagate(nodes, child_node, value, my_index)
-
-            except (ValueError, RuntimeError):
-                leaf.is_terminal = True
-                value = evaluate_state(leaf.observation.current, my_index)
-                _backpropagate(nodes, leaf, value, my_index)
-
+        if stats["is_terminal"]:
+            stats["visits"] += 1
             simulations += 1
+            continue
 
-    finally:
-        search_end()
+        rollout_value = _rollout_from_node(
+            stats["search_id"], stats["observation"], my_index, max_depth=5,
+        )
+        stats["visits"] += 1
+        stats["value"] = stats["value"] * (stats["visits"] - 1) / stats["visits"] + rollout_value / stats["visits"]
+        simulations += 1
 
-    return None
+    search_end()
+
+    best_action = None
+    best_visits = -1
+    for idx, stats in child_stats.items():
+        if stats["visits"] > best_visits:
+            best_visits = stats["visits"]
+            best_action = stats["action"]
+
+    if best_action is not None:
+        return best_action
+
+    return _get_heuristic_action(root_obs)
 
 
-def _select_leaf(nodes: dict[int, MCTSNode], root_id: int) -> MCTSNode | None:
-    root = nodes.get(root_id)
-    if root is None:
-        return None
+def _select_root_child(child_stats: dict[int, dict], root_value: float, exploration: float = 1.414) -> int | None:
+    total_visits = sum(s["visits"] for s in child_stats.values())
+    if total_visits == 0:
+        return next(iter(child_stats))
 
-    best = root
+    best_idx = None
     best_ucb = -float("inf")
 
-    for node in nodes.values():
-        if node.visit_count == 0:
-            return node
-        ucb = node.ucb
+    for idx, stats in child_stats.items():
+        if stats["visits"] == 0:
+            return idx
+
+        exploit = stats["value"]
+        explore = exploration * (total_visits ** 0.5 / stats["visits"])
+        ucb = exploit + explore
+
         if ucb > best_ucb:
             best_ucb = ucb
-            best = node
+            best_idx = idx
 
-    return best
-
-
-def _get_actions_for_node(node: MCTSNode, my_index: int) -> list[list[int]]:
-    if node.observation is None or node.observation.select is None:
-        return []
-
-    obs = node.observation
-    select = obs.select
-    options = select.option
-
-    if len(options) == 0:
-        return []
-
-    if len(options) == 1:
-        return [[0]]
-
-    action = choose_action(obs)
-    if action:
-        return [action]
-
-    return [random.sample(range(len(options)), min(select.maxCount, len(options)))]
+    return best_idx
 
 
-def _evaluate_terminal(node: MCTSNode, my_index: int) -> float:
-    if node.observation and node.observation.current:
-        return evaluate_state(node.observation.current, my_index)
+def _rollout_from_node(search_id: int, observation: Observation, my_index: int, max_depth: int = 5) -> float:
+    current_obs = observation
+
+    for _ in range(max_depth):
+        if current_obs is None or current_obs.select is None or current_obs.current is None:
+            break
+
+        if current_obs.current.result != -1:
+            if current_obs.current.result == my_index:
+                return 10000.0
+            return -10000.0
+
+        options = current_obs.select.option
+        if not options:
+            break
+
+        n_opts = len(options)
+        if n_opts == 0:
+            break
+
+        action = _get_rollout_action(current_obs)
+        if action is None:
+            break
+
+        try:
+            next_state = search_step(search_id, action)
+        except (ValueError, RuntimeError):
+            break
+
+        search_id = next_state.searchId
+        current_obs = next_state.observation
+
+    if current_obs and current_obs.current:
+        return evaluate_state(current_obs.current, my_index)
     return 0.0
 
 
-def _backpropagate(nodes: dict[int, MCTSNode], node: MCTSNode, value: float, my_index: int):
-    node.visit_count += 1
-    node.value_sum += value
+def _get_rollout_action(obs: Observation) -> list[int] | None:
+    select = obs.select
+    if select is None or not select.option:
+        return None
+
+    n = len(select.option)
+    if n == 1:
+        return [0]
+
+    if select.type in (SelectType.MAIN, SelectType.ATTACK):
+        heuristic = _get_heuristic_action(obs)
+        if heuristic is not None:
+            return heuristic
+
+    if select.minCount > 0:
+        return list(range(min(select.minCount, n)))
+
+    return [0]
+
+
+def _compute_action_for_option(obs: Observation, option_index: int) -> list[int] | None:
+    select = obs.select
+    if select is None:
+        return None
+
+    options = select.option
+    if option_index >= len(options):
+        return None
+
+    min_count = select.minCount
+    max_count = select.maxCount
+    select_type = select.type
+
+    if min_count == 0 and max_count == 0:
+        return []
+
+    if select_type in (SelectType.MAIN, SelectType.ATTACK, SelectType.YES_NO,
+                       SelectType.COUNT, SelectType.SPECIAL_CONDITION, SelectType.SKILL):
+        return [option_index]
+
+    if select_type in (SelectType.CARD, SelectType.ATTACHED_CARD,
+                       SelectType.CARD_OR_ATTACHED_CARD, SelectType.ENERGY, SelectType.EVOLVE):
+        if max_count == 1:
+            return [option_index]
+        if min_count == max_count and min_count > 0:
+            return list(range(min(min_count, len(options))))
+
+    if max_count == 1:
+        return [option_index]
+
+    return [option_index]
+
+
+def _get_heuristic_action(obs: Observation) -> list[int] | None:
+    try:
+        return choose_action(obs)
+    except Exception:
+        if obs.select and obs.select.option:
+            n = len(obs.select.option)
+            if n == 1:
+                return [0]
+            if obs.select.minCount > 0:
+                return list(range(min(obs.select.minCount, n)))
+            return [0]
+        return None
 
 
 def predict_opponent_deck(all_card_ids: list[int], opp: PlayerState) -> list[int]:
-    known_opp_cards: set[int] = set()
+    known: set[int] = set()
     if opp.discard:
         for card in opp.discard:
-            known_opp_cards.add(card.id)
+            known.add(card.id)
     if opp.active:
         for mon in opp.active:
-            if mon:
-                known_opp_cards.add(mon.id)
+            if mon is not None:
+                known.add(mon.id)
     if opp.bench:
         for mon in opp.bench:
-            known_opp_cards.add(mon.id)
+            known.add(mon.id)
 
-    remaining = 60 - len(known_opp_cards)
-    pool = [cid for cid in all_card_ids if cid not in known_opp_cards]
-    if pool and remaining > 0:
-        prediction = list(known_opp_cards) + (pool * ((remaining // len(pool)) + 1))[:remaining]
-        return prediction[:60]
-    return list(known_opp_cards) + [3] * max(0, remaining)
+    remaining = 60 - len(known)
+    pool = [cid for cid in all_card_ids if cid not in known]
+    if not pool:
+        return list(known) + [3] * max(0, remaining)
+
+    repeats = (remaining // len(pool)) + 1
+    filler = (pool * repeats)[:remaining]
+    return list(known) + filler
 
 
 def predict_opponent_hand(opp: PlayerState) -> list[int]:
@@ -257,12 +287,47 @@ def predict_opponent_hand(opp: PlayerState) -> list[int]:
 
 
 def predict_opponent_prize(opp: PlayerState) -> list[int]:
-    known = [p.id for p in opp.prize if p is not None]
-    unknown_count = len([p for p in opp.prize if p is None])
-    return known + [3] * unknown_count
+    result = []
+    for p in opp.prize:
+        if p is not None:
+            result.append(p.id)
+        else:
+            result.append(3)
+    return result
 
 
 def predict_opponent_active(opp: PlayerState) -> list[int]:
-    if opp.active and opp.active[0] is not None:
+    if opp.active and len(opp.active) > 0 and opp.active[0] is not None:
         return []
     return [3]
+
+
+def build_search_inputs(obs: Observation) -> dict:
+    if obs.current is None or obs.select is None:
+        return {}
+
+    my_index = obs.current.yourIndex
+    me = obs.current.players[my_index]
+    opp = obs.current.players[1 - my_index]
+    all_card_ids = list(get_card_data().keys())
+
+    your_prize = [3 if p is None else p.id for p in me.prize]
+
+    if obs.select.deck:
+        your_deck_list = [c.id for c in obs.select.deck]
+    else:
+        your_deck_list = [3] * me.deckCount
+
+    opp_deck = predict_opponent_deck(all_card_ids, opp)
+    opp_prize = predict_opponent_prize(opp)
+    opp_hand = predict_opponent_hand(opp)
+    opp_active = predict_opponent_active(opp)
+
+    return {
+        "your_deck": your_deck_list,
+        "your_prize": your_prize,
+        "opponent_deck": opp_deck,
+        "opponent_prize": opp_prize,
+        "opponent_hand": opp_hand,
+        "opponent_active": opp_active,
+    }

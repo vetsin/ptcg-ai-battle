@@ -10,3 +10,5 @@ wheels/
 .venv
 .env
 data
+si_training/
+training_data/
