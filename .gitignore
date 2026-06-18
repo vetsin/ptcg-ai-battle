@@ -12,3 +12,4 @@ wheels/
 data
 si_training/
 training_data/
+*.tar.gz

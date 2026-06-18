@@ -31,7 +31,7 @@ _policy_enabled = False
 _policy_blend = 0.7
 _mcts_enabled = True
 _mcts_max_time_ms = 1500.0
-_mcts_min_options = 3
+_mcts_min_options = 4
 
 
 def load_policy_model(path: str | None = None, device: str = "cpu"):
@@ -88,7 +88,7 @@ def choose_action(obs: Observation, use_model: bool = True) -> list[int]:
     if len(options) == 1:
         return [0]
 
-    if _mcts_enabled and select_type in (SelectType.MAIN, SelectType.ATTACK) and len(options) >= _mcts_min_options and obs.search_begin_input is not None:
+    if _mcts_enabled and _should_use_mcts(obs, select_type, options, state, my_index):
         mcts_action = _try_mcts(obs)
         if mcts_action is not None:
             return mcts_action
@@ -138,6 +138,27 @@ def _choose_action_model(obs: Observation, select: SelectData, heuristic_action:
         return None
     except Exception:
         return None
+
+
+def _should_use_mcts(obs: Observation, select_type: int, options, state: State, my_index: int) -> bool:
+    if obs.search_begin_input is None:
+        return False
+    if len(options) < _mcts_min_options:
+        return False
+    if select_type == SelectType.ATTACK:
+        return True
+    if select_type == SelectType.MAIN:
+        me = state.players[my_index]
+        my_active = me.active[0] if me.active else None
+        opp_active = state.players[1 - my_index].active[0] if state.players[1 - my_index].active else None
+        has_attack = any(o.type == OptionType.ATTACK for o in options)
+        has_playable = any(o.type == OptionType.PLAY for o in options)
+        turn_late = state.turn >= 2
+        if has_attack and my_active and opp_active:
+            return True
+        if has_playable and turn_late:
+            return True
+    return False
 
 
 def _try_mcts(obs: Observation) -> list[int] | None:
