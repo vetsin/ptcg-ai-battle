@@ -44,6 +44,10 @@ SUBMIT_FILES=(
     agent/features.py
     agent/network.py
     agent/deck.py
+    agent/opponent_model.py
+    agent/selfplay.py
+    agent/opponents.py
+    agent/si_train.py
 )
 
 # ── Pack command ──
