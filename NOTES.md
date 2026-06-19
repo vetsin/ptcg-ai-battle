@@ -72,7 +72,7 @@ Source: https://github.com/tchauffi/ChessTransformer
 ## Known Weaknesses
 
 - **40% vs Crustle** (ex-immunity wall)
-- **40% vs Slowking** (psychic control)
+- **40% vs Slowking**: partly a real hard matchup (psychic control), but also partly an intermittent engine bug — `battle_start` returns null for the Slowking deck roughly 30-50% of the time after a process has already run other battles (0/30-40 crashes when it's the very first battle in a fresh process; clearly nonzero, clustered crashes after prior games). Static legality passes (`validate_deck`), so this isn't a deck-construction bug like Hydrapple/Archaludon — it's inside the closed-source `libcg.so`, not fixable from this codebase. `validate_deck_for_training`'s majority-vote pre-flight check correctly catches this and skips the deck for that training run when it trips (working as intended), but it means Slowking training coverage is flaky run-to-run. True skill-based WR vs Slowking is likely higher than the recorded 40% once crash-losses are excluded — don't trust that number at face value.
 - **MCTS rollouts assume rational opponent** (42% vs random)
 
 ### Fixed

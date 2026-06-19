@@ -100,6 +100,8 @@ This is a separate change from A/B training but complements it — the agent lea
 
 Total: ~1000-1200 games. At ~0.5s/game (no MCTS for training opponent), this takes ~10 minutes.
 
+**Status (2026-06-19)**: Implemented. `mirror_ratio` was declared on `ABTrainConfig` but never actually wired in (hardcoded 0.3) — fixed. Added `_curriculum_for_iteration()` in `agent/ab_train.py`, phase boundaries as fractions of `num_iterations` (0-30% bootstrap @ mirror_ratio=0, 30-60% deepen @ 0.1, 60-100% refine @ 1.0 mirror), so it scales to any `num_iterations`. Default `__main__` config now runs all 10 iterations.
+
 ### A.5: Model Architecture Changes
 
 Current `PTCGSimpleNet` (128 hidden) is too small for diverse states. Changes:
@@ -108,6 +110,8 @@ Current `PTCGSimpleNet` (128 hidden) is too small for diverse states. Changes:
 2. **Train value head with MSE loss on outcome labels** (0 or 1, not constant)
 3. **Weight loser trajectories equally** — critical for balanced value learning
 4. **Add deck archetype as input feature** (one-hot of 9 archetypes) so the model learns matchup patterns
+
+**Status (2026-06-19)**: All implemented. (1)-(3) were already done by the A/B training loop. (4): reused the existing `OpponentModel` archetype inference (30 archetypes, not 9 — that count predates the richer `opponent_model.py`) rather than building a separate one-hot encoder; `encode_state()` now appends a 30-dim probability vector and calls `opp_model.update()` directly so the belief stays fresh even off the MCTS path. `NUM_STATE_FEATURES` 120->150 — this invalidates every prior checkpoint (`model.pt`, `ab_training/*`), so a full retrain followed.
 
 ### A.6: Value Head Integration with MCTS
 
@@ -188,6 +192,8 @@ def validate_deck_for_training(deck: list[int], name: str) -> bool:
     pass
 ```
 
+**Status (2026-06-19)**: Implemented in `agent/deck.py`, all 4 checks present (the 3rd runs 3 trials with majority-vote since `random_agent` play is stochastic — a single crash can be a fluke rather than a structurally broken deck). Also extended the static legality check itself: it only compared per-card-ID counts, missing the real TCG rule of max-4-copies-*per name* across reprints. That gap is exactly what caused the "0% vs Hydrapple ex / Archaludon ex" entries in `NOTES.md` — both decks were illegal (not bad matchups), silently rejected by `battle_start`, recorded as instant losses. Fixed both decklists in `competitive_decks.json`. Wired into `run_ab_training()`: validates `our_deck` (fatal if broken) and filters `opponent_decks` (skip + warn) before any training games run.
+
 ---
 
 ## Phase C: Multi-Deck Training Integration
@@ -242,22 +248,24 @@ MATCHUP_WEIGHTS = {
 
 This ensures the model learns more from hard matchups.
 
+**Status (2026-06-19)**: Implemented in `agent/ab_train.py` (`MATCHUP_WEIGHTS`, `_matchup_weight()`). Required threading a real per-sample weight through training for the first time — `GameTrajectory` gained an `opponent_name` field (set in `_run_single_game`), `_trajectories_to_training_data()` tags each record with its matchup weight, and `agent/network.py`'s `PTCGDataset`/`collate_fn`/`train_policy` now carry and apply that weight in the loss (previously every sample was weighted equally with no mechanism to do otherwise).
+
 ---
 
 ## Implementation Order
 
-| Step | Task | Files | Effort | Impact |
-|---|---|---|---|---|
-| A.1 | A/B self-play loop | `agent/ab_train.py` (new) | 1 day | Critical |
-| A.2 | Multi-deck self-play games | `agent/ab_train.py` | 0.5 day | High |
-| B.2 | Expand competitive decks to 16-20 | `competitive_decks.json` | 1 day | High |
-| A.3 | Stochastic MCTS rollouts | `agent/search.py` | 0.5 day | Medium |
-| A.4 | Training curriculum | `agent/ab_train.py` | 0.5 day | Medium |
-| B.4 | Deck validation pipeline | `agent/deck.py` | 0.5 day | Medium |
-| A.5 | Model architecture (256 hidden, deck feature) | `agent/network.py`, `agent/features.py` | 0.5 day | Medium |
-| C.1 | Multi-deck training integration | `agent/ab_train.py`, `agent/selfplay.py` | 0.5 day | Medium |
-| A.6 | Value head integration with MCTS | `agent/search.py` | 1 day | High (after A.1-A.4) |
-| C.3 | Matchup difficulty weighting | `agent/ab_train.py` | 0.5 day | Low |
+| Step | Task | Files | Effort | Impact | Status |
+|---|---|---|---|---|---|
+| A.1 | A/B self-play loop | `agent/ab_train.py` (new) | 1 day | Critical | Done |
+| A.2 | Multi-deck self-play games | `agent/ab_train.py` | 0.5 day | High | Done |
+| B.2 | Expand competitive decks to 16-20 | `competitive_decks.json` | 1 day | High | Done (16) |
+| A.3 | Stochastic MCTS rollouts | `agent/search.py` | 0.5 day | Medium | Done |
+| A.4 | Training curriculum | `agent/ab_train.py` | 0.5 day | Medium | Done |
+| B.4 | Deck validation pipeline | `agent/deck.py` | 0.5 day | Medium | Done |
+| A.5 | Model architecture (256 hidden, deck feature) | `agent/network.py`, `agent/features.py` | 0.5 day | Medium | Done |
+| C.1 | Multi-deck training integration | `agent/ab_train.py`, `agent/selfplay.py` | 0.5 day | Medium | Done (via A.2) |
+| A.6 | Value head integration with MCTS | `agent/search.py` | 1 day | High (after A.1-A.4) | Done, disabled (underperformed) |
+| C.3 | Matchup difficulty weighting | `agent/ab_train.py` | 0.5 day | Low | Done |
 
 **Total estimated effort**: ~6 days
 
