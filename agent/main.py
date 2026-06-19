@@ -8,6 +8,7 @@ from agent.opponent_model import reset_opponent_models
 
 _deck_cache: list[int] | None = None
 _last_game_id: int = -1
+_models_loaded = False
 
 
 def read_deck() -> list[int]:
@@ -23,8 +24,23 @@ def read_deck() -> list[int]:
     return deck
 
 
+def _ensure_models_loaded() -> None:
+    global _models_loaded
+    if _models_loaded:
+        return
+    _models_loaded = True
+
+    from agent.policy import load_policy_model
+    from agent.search import load_value_model
+
+    load_policy_model()
+    load_value_model()
+
+
 def agent(obs_dict: dict) -> list[int]:
     global _last_game_id
+
+    _ensure_models_loaded()
 
     if not obs_dict or 'select' not in obs_dict:
         deck = read_deck()

@@ -23,8 +23,19 @@ _value_net_scale = 400.0
 
 
 def load_value_model(path: str | None = None, device: str = "cpu") -> None:
-    """Opt-in: load a trained value head to replace MCTS rollouts (see SELFPLAY_PLAN.md A.6)."""
+    """Load a trained value head to replace MCTS rollouts (see SELFPLAY_PLAN.md A.6)."""
     global _value_model, _value_device, _value_net_enabled
+    if path is None:
+        for candidate in [
+            "model.pt",
+            "model.pth",
+            os.path.join(os.path.dirname(__file__), "model.pt"),
+            os.path.join(os.path.dirname(__file__), "..", "model.pt"),
+            "/kaggle_simulations/agent/model.pt",
+        ]:
+            if os.path.exists(candidate):
+                path = candidate
+                break
     if path is None or not os.path.exists(path):
         _value_net_enabled = False
         return
