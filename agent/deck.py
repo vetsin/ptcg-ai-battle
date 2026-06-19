@@ -60,6 +60,73 @@ def validate_deck(deck: list[int]) -> list[str]:
     return errors
 
 
+def validate_deck_for_training(deck: list[int], name: str = "deck", max_steps: int = 300) -> list[str]:
+    """Pre-flight check before using a deck in training/self-play (SELFPLAY_PLAN.md B.4).
+
+    Catches decks that pass `validate_deck`'s static legality check but still fail
+    at runtime (engine-level rejection, no attackers, etc.) so they don't silently
+    consume training games as instant losses (battle_start returns None -> outcome=-1).
+    """
+    errors = validate_deck(deck)
+    if errors:
+        return [f"[{name}] {e}" for e in errors]
+
+    card_db = get_deck_card_db()
+    has_attacker = False
+    for cid in set(deck):
+        cd = card_db.get(cid)
+        if cd and cd.cardType == CardType.POKEMON and cd.attacks:
+            has_attacker = True
+            break
+    if not has_attacker:
+        errors.append(f"[{name}] No Pokemon with attacks found in deck")
+
+    from cg.game import battle_start, battle_finish
+
+    try:
+        obs_dict, _ = battle_start(deck, deck)
+    except Exception as e:
+        return [f"[{name}] battle_start raised {type(e).__name__}: {e}"]
+
+    if obs_dict is None:
+        errors.append(f"[{name}] battle_start rejected the deck (engine-level legality failure)")
+        return errors
+
+    try:
+        battle_finish()
+    except Exception:
+        pass
+
+    from agent.selfplay import run_game
+    from agent.opponents import random_agent
+
+    # random_agent play is stochastic, so a single crashing trial can be a rare edge
+    # case rather than a structurally broken deck. Run a few trials and only flag the
+    # deck if a majority crash immediately (outcome=-1, turns=0 means battle_start/engine
+    # rejected it outright, not just a slow/incomplete game).
+    trials = 3
+    crashes = 0
+    for t in range(trials):
+        try:
+            traj = run_game(
+                deck0=deck, deck1=deck,
+                agent0_fn=random_agent, agent1_fn=random_agent,
+                max_steps=max_steps, game_id=f"validate_{name}_{t}",
+                collect_trajectory=False,
+            )
+        except Exception as e:
+            errors.append(f"[{name}] run_game raised {type(e).__name__}: {e}")
+            return errors
+
+        if traj.outcome == -1 and traj.num_turns == 0:
+            crashes += 1
+
+    if crashes > trials // 2:
+        errors.append(f"[{name}] game crashed immediately in {crashes}/{trials} trials (outcome=-1, turns=0)")
+
+    return errors
+
+
 def build_charizard_ex_deck() -> list[int]:
     deck = [
         721, 721, 721,  # Pidgey x3

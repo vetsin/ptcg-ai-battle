@@ -372,10 +372,22 @@ def run_ab_training(
 
     our_deck = load_deck_csv()
 
+    from agent.deck import validate_deck_for_training
+
+    our_errors = validate_deck_for_training(our_deck, name="our_deck")
+    if our_errors:
+        raise ValueError(f"Our deck failed pre-flight validation: {our_errors}")
+
     comp_decks_data = load_competitive_decks()
-    opponent_decks = [
-        (d["name"], d["deck"]) for d in comp_decks_data
-    ]
+    opponent_decks = []
+    for d in comp_decks_data:
+        errors = validate_deck_for_training(d["deck"], name=d["name"])
+        if errors:
+            print(f"  [validation] Skipping '{d['name']}': {errors}")
+            continue
+        opponent_decks.append((d["name"], d["deck"]))
+
+    print(f"  [validation] {len(opponent_decks)}/{len(comp_decks_data)} opponent decks passed pre-flight check")
 
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
