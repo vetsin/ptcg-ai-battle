@@ -135,26 +135,27 @@ class PTCGDataset(Dataset):
         self.max_options = max_options
 
         for record in data:
-            state_features, option_features_list, action_indices, reward = self._process_record(record)
+            state_features, option_features_list, action_indices, reward, weight = self._process_record(record)
             if state_features is not None and option_features_list:
-                self.samples.append((state_features, option_features_list, action_indices, reward))
+                self.samples.append((state_features, option_features_list, action_indices, reward, weight))
 
     def _process_record(self, record: dict):
         state_features = record.get("state_features")
         option_features = record.get("option_features")
         action = record.get("action", [])
         reward = record.get("reward", 0.0)
+        weight = record.get("weight", 1.0)
 
         if state_features is None or option_features is None:
-            return None, None, None, 0.0
+            return None, None, None, 0.0, 1.0
 
-        return state_features, option_features, action, reward
+        return state_features, option_features, action, reward, weight
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        state_feat, option_feats, action_idx, reward = self.samples[idx]
+        state_feat, option_feats, action_idx, reward, weight = self.samples[idx]
 
         state_tensor = torch.tensor(state_feat, dtype=torch.float32)
 
@@ -171,7 +172,7 @@ class PTCGDataset(Dataset):
             a = action_idx[0] if isinstance(action_idx, list) else action_idx
             action_target = min(max(a, 0), num_options - 1, self.max_options - 1)
 
-        return state_tensor, padded_options, mask, action_target, num_options, reward
+        return state_tensor, padded_options, mask, action_target, num_options, reward, weight
 
 
 def collate_fn(batch):
@@ -181,7 +182,8 @@ def collate_fn(batch):
     actions = torch.tensor([b[3] for b in batch], dtype=torch.long)
     num_options = torch.tensor([b[4] for b in batch], dtype=torch.long)
     rewards = torch.tensor([b[5] for b in batch], dtype=torch.float32)
-    return states, options, masks, actions, num_options, rewards
+    weights = torch.tensor([b[6] for b in batch], dtype=torch.float32)
+    return states, options, masks, actions, num_options, rewards, weights
 
 
 def load_trajectory_data(data_dir: str | Path) -> list[dict]:
@@ -288,7 +290,7 @@ def train_policy(
         total_correct = 0
         total_samples = 0
 
-        for states, options, masks, actions, num_options, rewards in dataloader:
+        for states, options, masks, actions, num_options, rewards, weights in dataloader:
             B = states.size(0)
             states = states.to(device)
             options = options.to(device)
@@ -296,6 +298,7 @@ def train_policy(
             actions = actions.to(device)
             num_options = num_options.to(device)
             rewards = rewards.to(device)
+            weights = weights.to(device)
 
             action_scores, values = model(states, options, masks)
 
@@ -310,12 +313,16 @@ def train_policy(
 
             clamped_actions = actions.clamp(min=0)
 
-            loss_action = nn.functional.cross_entropy(action_scores, clamped_actions)
+            weight_sum = weights.sum().clamp(min=1e-8)
+
+            loss_action_per = nn.functional.cross_entropy(action_scores, clamped_actions, reduction="none")
+            loss_action = (loss_action_per * weights).sum() / weight_sum
 
             value_targets = rewards.clone()
             value_targets = value_targets.clamp(0.0, 1.0)
 
-            loss_value = nn.functional.mse_loss(values, value_targets)
+            loss_value_per = nn.functional.mse_loss(values, value_targets, reduction="none")
+            loss_value = (loss_value_per * weights).sum() / weight_sum
 
             loss = loss_action + reward_weight * loss_value
 

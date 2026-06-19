@@ -27,7 +27,7 @@ from cg.api import to_observation_class
 
 
 def _run_single_game(args: tuple) -> dict:
-    deck0, deck1, agent0_type, agent1_type, game_id, max_steps, collect_trajectory, traj_player, use_mcts = args
+    deck0, deck1, agent0_type, agent1_type, game_id, max_steps, collect_trajectory, traj_player, use_mcts, opponent_name = args
 
     from agent.opponent_model import reset_opponent_models
     from agent.opponents import slightly_smart_agent
@@ -54,6 +54,7 @@ def _run_single_game(args: tuple) -> dict:
         collect_trajectory=collect_trajectory,
         trajectory_player=traj_player,
     )
+    trajectory.opponent_name = opponent_name
 
     result = {
         "outcome": trajectory.outcome,
@@ -82,6 +83,34 @@ def _run_single_game(args: tuple) -> dict:
     return result
 
 
+# C.3: not all wins are equal — weight training samples by matchup difficulty so
+# the model learns more from the hardest known matchups (SELFPLAY_PLAN.md C.3).
+MATCHUP_WEIGHTS: dict[str, float] = {
+    "Crustle": 1.5,
+    "Slowking": 1.3,
+    "Lillie's Clefairy": 1.2,
+}
+DEFAULT_MATCHUP_WEIGHT = 1.0
+
+
+def _matchup_weight(opponent_name: str) -> float:
+    return MATCHUP_WEIGHTS.get(opponent_name, DEFAULT_MATCHUP_WEIGHT)
+
+
+def _curriculum_for_iteration(iteration: int, config: "ABTrainConfig") -> tuple[int, float, str]:
+    """Returns (games_per_iteration, mirror_ratio, phase_name) for this iteration."""
+    if not config.use_curriculum:
+        return config.games_per_iteration, config.mirror_ratio, "flat"
+
+    frac = iteration / max(config.num_iterations, 1)
+    if frac < config.curriculum_bootstrap_frac:
+        return config.curriculum_bootstrap_games, 0.0, "bootstrap (vs competitive decks)"
+    elif frac < config.curriculum_deepen_frac:
+        return config.curriculum_deepen_games, 0.1, "deepen (mostly competitive decks)"
+    else:
+        return config.curriculum_refine_games, 1.0, "refine (mirror vs recent champion)"
+
+
 @dataclass
 class ABTrainConfig:
     num_iterations: int = 10
@@ -98,6 +127,16 @@ class ABTrainConfig:
     max_options: int = 20
     device: str = "auto"
     max_steps_per_game: int = 2000
+    # A.4 curriculum (SELFPLAY_PLAN.md): bootstrap vs competitive decks first, then
+    # deepen with more games, then refine against the strongest recent self-play
+    # opponent (mirror). Phase boundaries are fractions of num_iterations, so this
+    # scales to whatever num_iterations is set to.
+    use_curriculum: bool = True
+    curriculum_bootstrap_frac: float = 0.3
+    curriculum_deepen_frac: float = 0.6
+    curriculum_bootstrap_games: int = 100
+    curriculum_deepen_games: int = 200
+    curriculum_refine_games: int = 100
     output_dir: str = "ab_training"
     num_workers: int = 1
     use_mcts_agent: bool = False
@@ -133,10 +172,11 @@ def _play_games_multi_deck(
     use_self_play: bool = True,
     num_workers: int = 1,
     use_mcts_agent: bool = False,
+    mirror_ratio: float = 0.3,
 ) -> SelfPlayResult:
     result = SelfPlayResult()
 
-    mirror_games = int(num_games * 0.3)
+    mirror_games = int(num_games * mirror_ratio)
     per_deck_games = (num_games - mirror_games) // max(len(opponent_decks), 1)
     remaining = num_games - mirror_games - per_deck_games * len(opponent_decks)
 
@@ -144,13 +184,10 @@ def _play_games_multi_deck(
 
     for i in range(mirror_games):
         traj_player = i % 2
-        if traj_player == 0:
-            deck0, deck1 = our_deck, our_deck
-        else:
-            deck0, deck1 = our_deck, our_deck
+        deck0, deck1 = our_deck, our_deck
         agent0_type = "agent" if use_self_play else ("agent" if traj_player == 0 else "smart")
         agent1_type = "agent" if use_self_play else ("smart" if traj_player == 0 else "agent")
-        game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{i:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent))
+        game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{i:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent, "mirror"))
 
     offset = mirror_games
     for name, deck in opponent_decks:
@@ -163,7 +200,7 @@ def _play_games_multi_deck(
                 deck0, deck1 = deck, our_deck
             agent0_type = "agent" if use_self_play else ("agent" if traj_player == 0 else "smart")
             agent1_type = "agent" if use_self_play else ("smart" if traj_player == 0 else "agent")
-            game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{idx:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent))
+            game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{idx:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent, name))
         offset += per_deck_games
 
     for i in range(remaining):
@@ -177,7 +214,7 @@ def _play_games_multi_deck(
                 deck0, deck1 = deck, our_deck
             agent0_type = "agent" if use_self_play else ("agent" if traj_player == 0 else "smart")
             agent1_type = "agent" if use_self_play else ("smart" if traj_player == 0 else "agent")
-            game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{idx:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent))
+            game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{idx:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent, name))
 
     random.shuffle(game_args)
 
@@ -234,6 +271,7 @@ def _trajectories_to_training_data(
             continue
 
         won = traj.outcome == traj.my_index
+        weight = _matchup_weight(traj.opponent_name)
 
         for step in traj.steps:
             obs = to_observation_class(step.obs_dict)
@@ -270,6 +308,7 @@ def _trajectories_to_training_data(
                 "select_type": step.select_type,
                 "select_context": step.select_context,
                 "num_options": num_options,
+                "weight": weight,
             }
             records.append(record)
 
@@ -401,8 +440,9 @@ def run_ab_training(
 
     for iteration in range(config.num_iterations):
         t0 = time.time()
+        games_this_iter, mirror_ratio_this_iter, phase_name = _curriculum_for_iteration(iteration, config)
         print(f"\n{'='*60}")
-        print(f"AB Training — Iteration {iteration + 1}/{config.num_iterations}")
+        print(f"AB Training — Iteration {iteration + 1}/{config.num_iterations} [{phase_name}]")
         print(f"{'='*60}")
 
         current_agent_fn = agent_fn
@@ -411,12 +451,13 @@ def run_ab_training(
             agent_fn=current_agent_fn,
             our_deck=our_deck,
             opponent_decks=opponent_decks,
-            num_games=config.games_per_iteration,
+            num_games=games_this_iter,
             collect_trajectory=True,
             max_steps=config.max_steps_per_game,
             use_self_play=True,
             num_workers=config.num_workers,
             use_mcts_agent=config.use_mcts_agent,
+            mirror_ratio=mirror_ratio_this_iter,
         )
 
         win_rate = result.wins / max(result.total_games, 1)
@@ -579,8 +620,7 @@ if __name__ == "__main__":
     from agent.main import agent
 
     config = ABTrainConfig(
-        num_iterations=6,
-        games_per_iteration=200,
+        num_iterations=10,
         validation_games=20,
         champion_threshold=0.55,
         hidden_dim=256,
@@ -588,6 +628,7 @@ if __name__ == "__main__":
         device="auto",
         num_workers=8,
         use_mcts_agent=False,
+        use_curriculum=True,
     )
 
     print("Starting A/B self-play training...")

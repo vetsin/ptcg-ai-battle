@@ -49,6 +49,7 @@ class GameTrajectory:
     steps: list[TrajectoryStep] = field(default_factory=list)
     difficulty: float = 0.0
     reward: float = 0.0
+    opponent_name: str = ""
 
 
 @dataclass
