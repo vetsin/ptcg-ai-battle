@@ -18,12 +18,14 @@ from cg.api import (
     to_observation_class,
 )
 from agent.evaluate import get_card_data, get_attack_data
+from agent.opponent_model import get_opponent_model, DECK_ARCHETYPES
 
 NUM_ENERGY_TYPES = 12
 NUM_CARD_TYPES = 7
 NUM_SELECT_TYPES = 11
 NUM_OPTION_TYPES = 17
-NUM_STATE_FEATURES = 120
+NUM_ARCHETYPES = len(DECK_ARCHETYPES)
+NUM_STATE_FEATURES = 120 + NUM_ARCHETYPES
 NUM_OPTION_FEATURES = 40
 
 
@@ -115,6 +117,12 @@ def encode_state(state: State) -> list[float]:
 
     features[118] = float(len(me.discard)) / 60.0
     features[119] = float(len(opp.discard)) / 60.0
+
+    opp_model = get_opponent_model(1 - my_index)
+    opp_model.update(opp)
+    archetype_probs = opp_model.get_archetype_probs()
+    for i, name in enumerate(DECK_ARCHETYPES):
+        features[120 + i] = archetype_probs.get(name, 0.0)
 
     return features
 
