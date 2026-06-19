@@ -4,20 +4,82 @@ import json
 import os
 import time
 import random
-import copy
+import multiprocessing
+import traceback
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-import torch
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-from agent.selfplay import run_game, GameTrajectory, SelfPlayResult
+import torch
+torch.set_num_threads(1)
+
+from agent.selfplay import GameTrajectory, SelfPlayResult
 from agent.opponents import slightly_smart_agent, load_competitive_decks
 from agent.deck import load_deck_csv
-from agent.network import train_policy, PTCGDataset, collate_fn
+from agent.network import train_policy
 from agent.features import encode_observation, NUM_STATE_FEATURES, NUM_OPTION_FEATURES
-from agent.evaluate import evaluate_state
 from cg.api import to_observation_class
-from cg.game import battle_start, battle_select, battle_finish
+
+
+def _run_single_game(args: tuple) -> dict:
+    deck0, deck1, agent0_type, agent1_type, game_id, max_steps, collect_trajectory, traj_player, use_mcts = args
+
+    from agent.opponent_model import reset_opponent_models
+    from agent.opponents import slightly_smart_agent
+
+    reset_opponent_models()
+
+    if use_mcts:
+        from agent.main import agent as agent_fn
+    else:
+        agent_fn = slightly_smart_agent
+
+    fn0 = agent_fn if agent0_type == "agent" else slightly_smart_agent
+    fn1 = agent_fn if agent1_type == "agent" else slightly_smart_agent
+
+    from agent.selfplay import run_game
+
+    trajectory = run_game(
+        deck0=deck0,
+        deck1=deck1,
+        agent0_fn=fn0,
+        agent1_fn=fn1,
+        max_steps=max_steps,
+        game_id=game_id,
+        collect_trajectory=collect_trajectory,
+        trajectory_player=traj_player,
+    )
+
+    result = {
+        "outcome": trajectory.outcome,
+        "reward": 0.0,
+        "num_turns": trajectory.num_turns,
+        "game_id": trajectory.game_id,
+        "my_index": trajectory.my_index,
+        "my_prize_taken": trajectory.my_prize_taken,
+        "opp_prize_taken": trajectory.opp_prize_taken,
+        "traj_player": traj_player,
+        "steps_count": len(trajectory.steps),
+    }
+
+    if trajectory.outcome == traj_player:
+        result["reward"] = 1.0
+    elif trajectory.outcome == 1 - traj_player:
+        result["reward"] = 0.0
+    elif trajectory.outcome == 2:
+        result["reward"] = 0.5
+
+    if collect_trajectory:
+        result["trajectory"] = trajectory
+    else:
+        result["trajectory"] = None
+
+    return result
 
 
 @dataclass
@@ -37,6 +99,8 @@ class ABTrainConfig:
     device: str = "auto"
     max_steps_per_game: int = 2000
     output_dir: str = "ab_training"
+    num_workers: int = 1
+    use_mcts_agent: bool = False
 
 
 @dataclass
@@ -67,6 +131,8 @@ def _play_games_multi_deck(
     collect_trajectory: bool = True,
     max_steps: int = 2000,
     use_self_play: bool = True,
+    num_workers: int = 1,
+    use_mcts_agent: bool = False,
 ) -> SelfPlayResult:
     result = SelfPlayResult()
 
@@ -74,78 +140,80 @@ def _play_games_multi_deck(
     per_deck_games = (num_games - mirror_games) // max(len(opponent_decks), 1)
     remaining = num_games - mirror_games - per_deck_games * len(opponent_decks)
 
-    game_schedule = []
+    game_args = []
 
-    for _ in range(mirror_games):
-        game_schedule.append(("mirror", our_deck))
+    for i in range(mirror_games):
+        traj_player = i % 2
+        if traj_player == 0:
+            deck0, deck1 = our_deck, our_deck
+        else:
+            deck0, deck1 = our_deck, our_deck
+        agent0_type = "agent" if use_self_play else ("agent" if traj_player == 0 else "smart")
+        agent1_type = "agent" if use_self_play else ("smart" if traj_player == 0 else "agent")
+        game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{i:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent))
 
+    offset = mirror_games
     for name, deck in opponent_decks:
-        for _ in range(per_deck_games):
-            game_schedule.append((name, deck))
+        for j in range(per_deck_games):
+            idx = offset + j
+            traj_player = idx % 2
+            if traj_player == 0:
+                deck0, deck1 = our_deck, deck
+            else:
+                deck0, deck1 = deck, our_deck
+            agent0_type = "agent" if use_self_play else ("agent" if traj_player == 0 else "smart")
+            agent1_type = "agent" if use_self_play else ("smart" if traj_player == 0 else "agent")
+            game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{idx:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent))
+        offset += per_deck_games
 
     for i in range(remaining):
         if opponent_decks:
             name, deck = opponent_decks[i % len(opponent_decks)]
-            game_schedule.append((name, deck))
-
-    random.shuffle(game_schedule)
-
-    for g_idx, (opp_name, opp_deck) in enumerate(game_schedule):
-        from agent.opponent_model import reset_opponent_models
-        reset_opponent_models()
-
-        traj_player = g_idx % 2
-
-        if use_self_play:
-            agent0_fn = agent_fn
-            agent1_fn = agent_fn
-        else:
+            idx = offset + i
+            traj_player = idx % 2
             if traj_player == 0:
-                agent0_fn = agent_fn
-                agent1_fn = slightly_smart_agent
+                deck0, deck1 = our_deck, deck
             else:
-                agent0_fn = slightly_smart_agent
-                agent1_fn = agent_fn
+                deck0, deck1 = deck, our_deck
+            agent0_type = "agent" if use_self_play else ("agent" if traj_player == 0 else "smart")
+            agent1_type = "agent" if use_self_play else ("smart" if traj_player == 0 else "agent")
+            game_args.append((deck0, deck1, agent0_type, agent1_type, f"ab_{idx:04d}", max_steps, collect_trajectory, traj_player, use_mcts_agent))
 
-        if traj_player == 0:
-            deck0 = our_deck
-            deck1 = opp_deck
-        else:
-            deck0 = opp_deck
-            deck1 = our_deck
+    random.shuffle(game_args)
 
-        game_id = f"ab_{g_idx:04d}_{int(time.time())}"
+    if num_workers > 1 and len(game_args) > 1:
+        try:
+            ctx = multiprocessing.get_context("fork")
+            workers = min(num_workers, len(game_args))
+            print(f"  [parallel] Starting {workers} workers for {len(game_args)} games")
+            with ctx.Pool(processes=workers) as pool:
+                results = pool.map(_run_single_game, game_args, chunksize=1)
+        except Exception as e:
+            print(f"  [parallel] Pool failed: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            print(f"  [parallel] Falling back to sequential")
+            results = [_run_single_game(args) for args in game_args]
+    else:
+        results = [_run_single_game(args) for args in game_args]
 
-        trajectory = run_game(
-            deck0=deck0,
-            deck1=deck1,
-            agent0_fn=agent0_fn,
-            agent1_fn=agent1_fn,
-            max_steps=max_steps,
-            game_id=game_id,
-            collect_trajectory=collect_trajectory,
-            trajectory_player=traj_player,
-        )
-
+    for res in results:
         result.total_games += 1
+        reward = res["reward"]
 
-        if trajectory.outcome == traj_player:
+        if reward >= 1.0:
             result.wins += 1
-            trajectory.reward = 1.0
-        elif trajectory.outcome == 1 - traj_player:
+        elif reward <= 0.0:
             result.losses += 1
-            trajectory.reward = 0.0
-        elif trajectory.outcome == 2:
+        elif reward > 0.0:
             result.draws += 1
-            trajectory.reward = 0.5
         else:
             result.errors += 1
-            trajectory.reward = 0.0
 
-        trajectory.my_index = traj_player
-
-        if collect_trajectory:
-            result.games.append(trajectory)
+        if collect_trajectory and res["trajectory"] is not None:
+            traj = res["trajectory"]
+            traj.reward = reward
+            traj.my_index = res["traj_player"]
+            result.games.append(traj)
 
     valid = result.wins + result.losses + result.draws
     if valid > 0:
@@ -215,45 +283,81 @@ def _validate_challenger(
     opponent_decks: list[tuple[str, list[int]]],
     num_games: int,
     max_steps: int = 2000,
+    num_workers: int = 1,
+    champion_model_path: str | None = None,
 ) -> float:
-    wins = 0
-    total = 0
+    game_args = []
 
     for i in range(num_games):
-        from agent.opponent_model import reset_opponent_models
-        reset_opponent_models()
-
         deck_idx = i % max(len(opponent_decks), 1)
         opp_name, opp_deck = opponent_decks[deck_idx] if opponent_decks else ("mirror", our_deck)
 
         if i % 2 == 0:
             deck0 = our_deck
             deck1 = opp_deck
-            agent0_fn = challenger_fn
-            agent1_fn = champion_fn
+            agent0_type = "challenger"
+            agent1_type = "champion"
             challenger_side = 0
         else:
             deck0 = opp_deck
             deck1 = our_deck
-            agent0_fn = champion_fn
-            agent1_fn = challenger_fn
+            agent0_type = "champion"
+            agent1_type = "challenger"
             challenger_side = 1
 
-        trajectory = run_game(
-            deck0=deck0,
-            deck1=deck1,
-            agent0_fn=agent0_fn,
-            agent1_fn=agent1_fn,
-            max_steps=max_steps,
-            game_id=f"val_{i:04d}",
-            collect_trajectory=False,
-        )
+        game_args.append((deck0, deck1, agent0_type, agent1_type, f"val_{i:04d}", max_steps, False, challenger_side))
 
-        total += 1
-        if trajectory.outcome == challenger_side:
-            wins += 1
+    val_fn = lambda args: _val_game(args, champion_model_path)
 
+    if num_workers > 1 and len(game_args) > 1:
+        try:
+            ctx = multiprocessing.get_context("fork")
+            workers = min(num_workers, len(game_args))
+            with ctx.Pool(processes=workers) as pool:
+                results = pool.map(val_fn, game_args)
+        except Exception:
+            results = [val_fn(args) for args in game_args]
+    else:
+        results = [val_fn(args) for args in game_args]
+
+    wins = sum(1 for r in results if r["challenger_won"])
+    total = len(results)
     return wins / max(total, 1)
+
+
+def _val_game(game_args, champion_model_path: str | None):
+    deck0, deck1, agent0_type, agent1_type, game_id, max_steps, _, traj_player = game_args
+
+    from agent.opponent_model import reset_opponent_models
+    from agent.selfplay import run_game
+
+    if champion_model_path:
+        from agent.policy import load_policy_model
+        load_policy_model(champion_model_path)
+
+    from agent.main import agent as agent_fn
+    from agent.opponents import slightly_smart_agent
+
+    reset_opponent_models()
+
+    if agent0_type == "champion":
+        fn0 = slightly_smart_agent
+        fn1 = agent_fn
+    else:
+        fn0 = agent_fn
+        fn1 = slightly_smart_agent
+
+    trajectory = run_game(
+        deck0=deck0,
+        deck1=deck1,
+        agent0_fn=fn0,
+        agent1_fn=fn1,
+        max_steps=max_steps,
+        game_id=game_id,
+        collect_trajectory=False,
+    )
+
+    return {"challenger_won": trajectory.outcome == traj_player}
 
 
 def run_ab_training(
@@ -299,6 +403,8 @@ def run_ab_training(
             collect_trajectory=True,
             max_steps=config.max_steps_per_game,
             use_self_play=True,
+            num_workers=config.num_workers,
+            use_mcts_agent=config.use_mcts_agent,
         )
 
         win_rate = result.wins / max(result.total_games, 1)
@@ -358,6 +464,8 @@ def run_ab_training(
                 opponent_decks=opponent_decks,
                 num_games=config.validation_games,
                 max_steps=config.max_steps_per_game,
+                num_workers=config.num_workers,
+                champion_model_path=model_path,
             )
 
             print(f"  Challenger WR vs champion: {challenger_wr:.1%}")
@@ -407,10 +515,11 @@ def run_ab_training(
 
         print(f"  Elapsed: {elapsed:.1f}s")
 
-    final_model = champion_model_path or str(output_dir / "final_model.pt")
+    final_model = str(output_dir / "final_model.pt")
     if champion_model_path:
         import shutil
-        shutil.copy2(champion_model_path, final_model)
+        if os.path.abspath(champion_model_path) != os.path.abspath(final_model):
+            shutil.copy2(champion_model_path, final_model)
         print(f"\nFinal champion model: {final_model}")
     else:
         print(f"\nNo champion was promoted. Original agent remains.")
@@ -459,12 +568,14 @@ if __name__ == "__main__":
 
     config = ABTrainConfig(
         num_iterations=6,
-        games_per_iteration=100,
+        games_per_iteration=200,
         validation_games=20,
         champion_threshold=0.55,
         hidden_dim=256,
         epochs=20,
         device="auto",
+        num_workers=8,
+        use_mcts_agent=False,
     )
 
     print("Starting A/B self-play training...")

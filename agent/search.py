@@ -1,3 +1,4 @@
+import os
 import random
 import time
 from cg.api import (
@@ -12,6 +13,62 @@ from cg.api import search_begin, search_step, search_end
 from agent.evaluate import evaluate_state, get_card_data, get_attack_data
 from agent.policy import choose_action
 from agent.opponent_model import get_opponent_model
+from agent.features import encode_observation
+
+_value_model = None
+_value_device = "cpu"
+_value_net_enabled = False
+_value_net_blend = 0.5
+_value_net_scale = 400.0
+
+
+def load_value_model(path: str | None = None, device: str = "cpu") -> None:
+    """Opt-in: load a trained value head to replace MCTS rollouts (see SELFPLAY_PLAN.md A.6)."""
+    global _value_model, _value_device, _value_net_enabled
+    if path is None or not os.path.exists(path):
+        _value_net_enabled = False
+        return
+    from agent.network import load_model
+    try:
+        _value_model = load_model(path, device=device)
+        _value_device = device
+        _value_net_enabled = True
+    except Exception:
+        _value_net_enabled = False
+
+
+def _value_net_signal(obs: Observation, my_index: int) -> float | None:
+    if not _value_net_enabled or _value_model is None:
+        return None
+    if obs is None or obs.current is None or obs.select is None:
+        return None
+    if obs.current.yourIndex != my_index:
+        return None
+    try:
+        state_features, option_features = encode_observation(obs)
+        if not state_features or not option_features:
+            return None
+        from agent.network import score_actions
+        _, value = score_actions(_value_model, state_features, option_features, device=_value_device)
+        return value
+    except Exception:
+        return None
+
+
+def _static_value_eval(observation: Observation, my_index: int) -> float | None:
+    obs = observation
+    if obs is None or obs.current is None:
+        return None
+    if obs.current.result != -1:
+        return 10000.0 if obs.current.result == my_index else -10000.0
+
+    net_signal = _value_net_signal(obs, my_index)
+    if net_signal is None:
+        return None
+
+    heuristic = evaluate_state(obs.current, my_index)
+    scaled_net = (net_signal - 0.5) * 2.0 * _value_net_scale
+    return (1.0 - _value_net_blend) * heuristic + _value_net_blend * scaled_net
 
 
 def mcts_search(
@@ -267,6 +324,11 @@ def _select_root_child(child_stats: dict[int, dict], root_value: float, explorat
 
 
 def _rollout_from_node(search_id: int, observation: Observation, my_index: int, max_depth: int = 5) -> float:
+    if _value_net_enabled:
+        net_eval = _static_value_eval(observation, my_index)
+        if net_eval is not None:
+            return net_eval
+
     current_obs = observation
 
     for _ in range(max_depth):

@@ -11,5 +11,7 @@ wheels/
 .env
 data
 si_training/
+ab_training/
 training_data/
 *.tar.gz
+

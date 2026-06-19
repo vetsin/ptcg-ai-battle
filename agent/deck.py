@@ -35,6 +35,8 @@ def validate_deck(deck: list[int]) -> list[str]:
     counts = Counter(deck)
 
     ace_spec_ids = set()
+    name_counts: dict[str, int] = {}
+    name_types: dict[str, CardType] = {}
     for cid, count in counts.items():
         cd = card_db.get(cid)
         if cd is None:
@@ -44,9 +46,16 @@ def validate_deck(deck: list[int]) -> list[str]:
             ace_spec_ids.add(cid)
         if count > 4 and cd.cardType != CardType.BASIC_ENERGY:
             errors.append(f"Card {cid} ({cd.name}): max 4 copies allowed, got {count}")
+        if cd.cardType != CardType.BASIC_ENERGY:
+            name_counts[cd.name] = name_counts.get(cd.name, 0) + count
+            name_types[cd.name] = cd.cardType
 
     if len(ace_spec_ids) > 1:
         errors.append(f"Only 1 ACE SPEC card allowed in deck, got {len(ace_spec_ids)}: {ace_spec_ids}")
+
+    for name, total in name_counts.items():
+        if total > 4:
+            errors.append(f"Card name '{name}': max 4 copies allowed across all printings, got {total}")
 
     return errors
 
