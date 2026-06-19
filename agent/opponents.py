@@ -190,20 +190,17 @@ def _pick_main_action(options: list[Option], state: State, my_index: int) -> lis
 
 
 def get_opponent_fn(difficulty: float):
-    if difficulty < 0.33:
-        return random_agent
-    elif difficulty < 0.66:
-        return _make_mixed_agent(0.5)
-    else:
-        return slightly_smart_agent
+    return slightly_smart_agent
 
 
-def _make_mixed_agent(policy_prob: float):
-    def mixed_agent(obs_dict: dict) -> list[int]:
-        if random.random() < policy_prob:
-            return slightly_smart_agent(obs_dict)
-        return random_agent(obs_dict)
-    return mixed_agent
+def load_competitive_decks() -> list[dict]:
+    import json
+    from pathlib import Path
+    p = Path(__file__).parent.parent / "competitive_decks.json"
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    return []
 
 
 DECK_TIERS = {

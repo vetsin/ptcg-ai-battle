@@ -59,6 +59,7 @@ def evaluate_state(state: State, my_index: int) -> float:
     score += _special_condition_score(me, opp)
     score += _knockout_threat_score(me, opp)
     score += _deck_out_score(me, opp)
+    score += _wall_penalty_score(me, opp)
 
     return score
 
@@ -258,6 +259,52 @@ def _special_condition_score(me: PlayerState, opp: PlayerState) -> float:
     return score
 
 
+def _has_ex_immunity(pokemon: Pokemon) -> bool:
+    card_db = get_card_data()
+    cd = card_db.get(pokemon.id)
+    if cd is None or not cd.skills:
+        return False
+    for skill in cd.skills:
+        txt = skill.text.lower() if skill.text else ""
+        if "prevent all damage" in txt and "ex" in txt.replace("{ex}", "ex"):
+            return True
+        if "can't be damaged" in txt and "ex" in txt:
+            return True
+    return False
+
+
+def _effective_damage(my_active: Pokemon, opp_active: Pokemon, raw_damage: int) -> int:
+    if raw_damage <= 0:
+        return 0
+
+    card_db = get_card_data()
+    my_cd = card_db.get(my_active.id)
+    opp_cd = card_db.get(opp_active.id)
+
+    damage = raw_damage
+
+    if opp_cd and opp_cd.skills:
+        for skill in opp_cd.skills:
+            txt = skill.text.lower() if skill.text else ""
+            if "prevent all damage" in txt and ("{ex}" in skill.text.lower() or "ex" in txt.replace("{ex}", "ex")):
+                if my_cd and (my_cd.ex or my_cd.megaEx):
+                    return 0
+
+    if my_cd and opp_cd:
+        if opp_cd.weakness is not None:
+            weakness_type = int(opp_cd.weakness)
+            my_energy = int(my_cd.energyType) if my_cd.energyType is not None else 0
+            if my_energy == weakness_type:
+                damage = int(damage * 2)
+        if opp_cd.resistance is not None:
+            resistance_type = int(opp_cd.resistance)
+            my_energy = int(my_cd.energyType) if my_cd.energyType is not None else 0
+            if my_energy == resistance_type:
+                damage = max(0, damage - 30)
+
+    return damage
+
+
 def _knockout_threat_score(me: PlayerState, opp: PlayerState) -> float:
     score = 0.0
     opp_active = opp.active[0] if opp.active else None
@@ -269,17 +316,23 @@ def _knockout_threat_score(me: PlayerState, opp: PlayerState) -> float:
         cd = card_db.get(my_active.id)
 
         if cd and cd.attacks:
-            max_damage = 0
+            max_effective_damage = 0
+            best_raw_damage = 0
             for atk_id in cd.attacks:
                 atk = attack_db.get(atk_id)
                 if atk and _can_use_attack(my_active, atk):
-                    if atk.damage > max_damage:
-                        max_damage = atk.damage
+                    if atk.damage > best_raw_damage:
+                        best_raw_damage = atk.damage
+                    eff = _effective_damage(my_active, opp_active, atk.damage)
+                    if eff > max_effective_damage:
+                        max_effective_damage = eff
 
-            if max_damage >= opp_active.hp:
+            if max_effective_damage >= opp_active.hp:
                 score += 400.0
+            elif best_raw_damage >= opp_active.hp and max_effective_damage == 0:
+                score -= 100.0
 
-            if max_damage >= opp_active.hp * 0.8:
+            if max_effective_damage >= opp_active.hp * 0.8:
                 score += 100.0
 
             if opp_active.hp <= 30 and my_active.hp > 0:
@@ -307,5 +360,48 @@ def _deck_out_score(me: PlayerState, opp: PlayerState) -> float:
         score += 200.0
     elif opp.deckCount <= 6:
         score += 30.0
+
+    return score
+
+
+def _wall_penalty_score(me: PlayerState, opp: PlayerState) -> float:
+    score = 0.0
+    my_active = me.active[0] if me.active else None
+    opp_active = opp.active[0] if opp.active else None
+
+    if my_active is None or opp_active is None:
+        return 0.0
+
+    card_db = get_card_data()
+    my_cd = card_db.get(my_active.id)
+
+    if _has_ex_immunity(opp_active):
+        if my_cd and (my_cd.ex or my_cd.megaEx):
+            score -= 300.0
+            has_non_ex_bench = False
+            for mon in me.bench:
+                bcd = card_db.get(mon.id)
+                if bcd and not bcd.ex and not bcd.megaEx and bcd.attacks:
+                    has_non_ex_bench = True
+                    break
+            if not has_non_ex_bench:
+                score -= 500.0
+
+                if opp.deckCount > 0:
+                    deck_out_value = max(0, (60 - opp.deckCount) * 8.0)
+                    score += deck_out_value
+
+                    if me.deckCount < 15:
+                        score -= 100.0
+
+            can_gust = False
+            for card in me.hand or []:
+                cd = card_db.get(card.id)
+                if cd and cd.cardType == CardType.SUPPORTER:
+                    if cd.name and ("boss" in cd.name.lower() or "orders" in cd.name.lower()):
+                        can_gust = True
+                        break
+            if can_gust and len(opp.bench) > 0:
+                score += 150.0
 
     return score

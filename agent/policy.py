@@ -21,7 +21,7 @@ from cg.api import (
     AreaType,
 )
 from cg.api import all_card_data, all_attack
-from agent.evaluate import get_card_data, get_attack_data, evaluate_state, _can_use_attack
+from agent.evaluate import get_card_data, get_attack_data, evaluate_state, _can_use_attack, _has_ex_immunity, _effective_damage
 from agent.features import encode_observation
 
 _card_db_cache: dict[int, CardData] | None = None
@@ -318,11 +318,16 @@ def _score_attack_option(opt: Option, state: State, my_index: int) -> float:
     if atk is None:
         return 50.0
 
-    score = 50.0 + atk.damage * 0.3
+    raw_damage = atk.damage
+    effective_damage = _effective_damage(my_active, opp_active, raw_damage)
 
-    if atk.damage >= opp_active.hp:
+    if effective_damage <= 0 and raw_damage > 0:
+        return -200.0
+
+    score = 50.0 + effective_damage * 0.3
+
+    if effective_damage >= opp_active.hp:
         score += 300.0
-        opp_prizes_taken = 6 - len([p for p in opp.prize if p is not None])
         card_db = _card_db()
         opp_cd = card_db.get(opp_active.id)
         if opp_cd and opp_cd.ex:
@@ -330,7 +335,7 @@ def _score_attack_option(opt: Option, state: State, my_index: int) -> float:
         if opp_cd and opp_cd.megaEx:
             score += 300.0
 
-    damage_ratio = atk.damage / opp_active.maxHp if opp_active.maxHp > 0 else 0
+    damage_ratio = effective_damage / opp_active.maxHp if opp_active.maxHp > 0 else 0
     if damage_ratio >= 1.0:
         score += 200.0
     elif damage_ratio >= 0.5:
@@ -341,6 +346,9 @@ def _score_attack_option(opt: Option, state: State, my_index: int) -> float:
 
 def _score_play_card(cd: CardData, opt: Option, state: State, my_index: int) -> float:
     me = state.players[my_index]
+    opp = state.players[1 - my_index]
+    my_active = me.active[0] if me.active else None
+    opp_active = opp.active[0] if opp.active else None
 
     if cd.cardType == CardType.SUPPORTER:
         if not state.supporterPlayed:
@@ -349,6 +357,15 @@ def _score_play_card(cd: CardData, opt: Option, state: State, my_index: int) -> 
             if me.hand is not None:
                 hand_size = len(me.hand)
                 score += min(hand_size * 0.5, 10.0)
+
+            if cd.name and ("boss" in cd.name.lower() or "orders" in cd.name.lower()):
+                if opp_active and _has_ex_immunity(opp_active):
+                    if my_active:
+                        my_cd = card_db.get(my_active.id)
+                        if my_cd and (my_cd.ex or my_cd.megaEx):
+                            if len(opp.bench) > 0:
+                                score += 200.0
+
             return score
         return -10.0
 
@@ -433,7 +450,9 @@ def _score_evolve(opt: Option, state: State, my_index: int) -> float:
 
 def _score_retreat(opt: Option, state: State, my_index: int) -> float:
     me = state.players[my_index]
+    opp = state.players[1 - my_index]
     my_active = me.active[0] if me.active else None
+    opp_active = opp.active[0] if opp.active else None
 
     if my_active is None:
         return -20.0
@@ -441,6 +460,22 @@ def _score_retreat(opt: Option, state: State, my_index: int) -> float:
         return -20.0
 
     score = 0.0
+    card_db = _card_db()
+
+    if opp_active and _has_ex_immunity(opp_active):
+        my_cd = card_db.get(my_active.id)
+        if my_cd and (my_cd.ex or my_cd.megaEx):
+            score += 150.0
+
+            has_non_ex_bench = False
+            for mon in me.bench:
+                bcd = card_db.get(mon.id)
+                if bcd and not bcd.ex and not bcd.megaEx and bcd.attacks:
+                    has_non_ex_bench = True
+                    break
+            if not has_non_ex_bench:
+                score -= 50.0
+
     if my_active.maxHp > 0:
         hp_ratio = my_active.hp / my_active.maxHp
         if hp_ratio < 0.3:
@@ -474,12 +509,19 @@ def _handle_attack(obs: Observation, select: SelectData, state: State, my_index:
         score = 0.0
         atk = attack_db.get(opt.attackId) if opt.attackId else None
         if atk:
-            score += atk.damage * 0.5
-            if opp_active:
-                if atk.damage >= opp_active.hp:
-                    score += 1000.0
-                elif atk.damage >= opp_active.hp * 0.5:
-                    score += 100.0
+            raw_damage = atk.damage
+            if my_active and opp_active:
+                effective_damage = _effective_damage(my_active, opp_active, raw_damage)
+                if effective_damage <= 0 and raw_damage > 0:
+                    score -= 200.0
+                else:
+                    score += effective_damage * 0.5
+                    if effective_damage >= opp_active.hp:
+                        score += 1000.0
+                    elif effective_damage >= opp_active.hp * 0.5:
+                        score += 100.0
+            else:
+                score += raw_damage * 0.5
         else:
             score += 10.0
 
@@ -589,7 +631,11 @@ def _select_setup_pokemon(options: list[Option], state: State, my_index: int, pr
 
 def _select_switch(options: list[Option], state: State, my_index: int) -> list[int]:
     me = state.players[my_index]
+    opp = state.players[1 - my_index]
+    opp_active = opp.active[0] if opp.active else None
     card_db = _card_db()
+
+    facing_wall = opp_active is not None and _has_ex_immunity(opp_active)
 
     scored = []
     for i, opt in enumerate(options):
@@ -597,18 +643,19 @@ def _select_switch(options: list[Option], state: State, my_index: int) -> list[i
         if opt.area == AreaType.BENCH:
             for mon in me.bench:
                 if mon.id == opt.cardId:
-                    score += mon.hp * 0.3
-                    cd = card_db.get(mon.id)
-                    if cd:
-                        if cd.ex:
+                    bcd = card_db.get(mon.id)
+                    if bcd:
+                        if facing_wall and not bcd.ex and not bcd.megaEx and bcd.attacks:
+                            score += 100.0
+                        if bcd.ex or bcd.megaEx:
                             score += 10.0
-                    if mon.hp == mon.maxHp:
-                        score += 20.0
+                        if mon.hp == mon.maxHp:
+                            score += 20.0
 
                     has_usable_attack = False
-                    if cd and cd.attacks:
+                    if bcd and bcd.attacks:
                         attack_db = get_attack_data()
-                        for atk_id in cd.attacks:
+                        for atk_id in bcd.attacks:
                             atk = attack_db.get(atk_id)
                             if atk and _can_use_attack(mon, atk):
                                 has_usable_attack = True
@@ -617,6 +664,7 @@ def _select_switch(options: list[Option], state: State, my_index: int) -> list[i
                     if has_usable_attack:
                         score += 30.0
 
+                    score += mon.hp * 0.3
                     break
         elif opt.type == OptionType.YES:
             score -= 50.0

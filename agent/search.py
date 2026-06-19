@@ -1,3 +1,4 @@
+import random
 import time
 from cg.api import (
     Observation,
@@ -312,9 +313,12 @@ def _get_rollout_action(obs: Observation) -> list[int] | None:
         return [0]
 
     if select.type in (SelectType.MAIN, SelectType.ATTACK):
-        heuristic = _get_heuristic_action(obs)
-        if heuristic is not None:
-            return heuristic
+        if random.random() < 0.7:
+            heuristic = _get_heuristic_action(obs)
+            if heuristic is not None:
+                return heuristic
+        else:
+            return [random.randint(0, n - 1)]
 
     if select.minCount > 0:
         return list(range(min(select.minCount, n)))

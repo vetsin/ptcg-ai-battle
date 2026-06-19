@@ -134,6 +134,111 @@ DECK_ARCHETYPES: dict[str, dict] = {
         "core": [85, 1079, 1121, 1182, 1123, 1086],
         "energy_count": 20,
     },
+    "lillies_clefairy": {
+        "name": "Lillie's Clefairy",
+        "energy_type": EnergyType.PSYCHIC,
+        "energy_card": 5,
+        "core": [756, 272, 184, 1071, 1182, 1121, 1198, 1123, 1086],
+        "energy_count": 16,
+    },
+    "dragapult_dusknoir": {
+        "name": "Dragapult Dusknoir",
+        "energy_type": EnergyType.PSYCHIC,
+        "energy_card": 5,
+        "core": [119, 120, 121, 131, 132, 133, 1071, 1227, 1182, 1121, 1152, 1086],
+        "energy_count": 14,
+    },
+    "slowking": {
+        "name": "Slowking",
+        "energy_type": EnergyType.PSYCHIC,
+        "energy_card": 5,
+        "core": [162, 163, 756, 272, 184, 276, 140, 1227, 1188, 1152, 1121],
+        "energy_count": 14,
+    },
+    "crustle": {
+        "name": "Crustle",
+        "energy_type": EnergyType.GRASS,
+        "energy_card": 1,
+        "core": [344, 345, 756, 1227, 1182, 1219, 1121, 1086],
+        "energy_count": 16,
+    },
+    "dragapult_blaziken": {
+        "name": "Dragapult Blaziken",
+        "energy_type": EnergyType.PSYCHIC,
+        "energy_card": 5,
+        "core": [119, 120, 121, 324, 325, 326, 1227, 1182, 1121, 1086, 1123],
+        "energy_count": 14,
+    },
+    "rockets_mewtwo": {
+        "name": "Rocket's Mewtwo",
+        "energy_type": EnergyType.PSYCHIC,
+        "energy_card": 5,
+        "core": [400, 401, 431, 434, 1227, 1216, 1218, 1121, 1134],
+        "energy_count": 14,
+    },
+    "ns_zoroark": {
+        "name": "N's Zoroark",
+        "energy_type": EnergyType.COLORLESS,
+        "energy_card": 7,
+        "core": [292, 293, 906, 1227, 1182, 1086, 1121, 1122],
+        "energy_count": 16,
+    },
+    "incineroar_ex": {
+        "name": "Incineroar ex",
+        "energy_type": EnergyType.FIRE,
+        "energy_card": 2,
+        "core": [77, 78, 79, 1079, 1121, 1182, 1086, 1123, 1227, 1097, 1232],
+        "energy_count": 18,
+    },
+    "raging_bolt_ex": {
+        "name": "Raging Bolt ex",
+        "energy_type": EnergyType.LIGHTNING,
+        "energy_card": 4,
+        "core": [63, 61, 62, 37, 1121, 1182, 1086, 1123, 1227, 1097, 1152, 1120],
+        "energy_count": 20,
+    },
+    "hydrapple_ex": {
+        "name": "Hydrapple ex",
+        "energy_type": EnergyType.GRASS,
+        "energy_card": 1,
+        "core": [42, 93, 150, 1079, 1121, 1182, 1086, 1123, 1227, 1097, 1152],
+        "energy_count": 22,
+    },
+    "archaludon_ex": {
+        "name": "Archaludon ex",
+        "energy_type": EnergyType.METAL,
+        "energy_card": 8,
+        "core": [839, 169, 190, 1079, 1121, 1182, 1086, 1123, 1227, 1097, 1245, 1248],
+        "energy_count": 20,
+    },
+    "greninja_ex": {
+        "name": "Greninja ex",
+        "energy_type": EnergyType.WATER,
+        "energy_card": 3,
+        "core": [33, 34, 40, 1079, 1121, 1182, 1086, 1123, 1227, 1097, 1152, 1240],
+        "energy_count": 20,
+    },
+    "terapagos_ex": {
+        "name": "Terapagos ex",
+        "energy_type": EnergyType.COLORLESS,
+        "energy_card": 7,
+        "core": [176, 124, 125, 1121, 1182, 1086, 1123, 1227, 1097, 1152, 1119, 1120, 1146],
+        "energy_count": 20,
+    },
+    "palafin_ex": {
+        "name": "Palafin ex",
+        "energy_type": EnergyType.WATER,
+        "energy_card": 3,
+        "core": [105, 51, 107, 1121, 1182, 1086, 1123, 1227, 1097, 1152, 1119, 1250, 1087],
+        "energy_count": 20,
+    },
+    "dark_trinity_ex": {
+        "name": "Dark Trinity ex",
+        "energy_type": EnergyType.DARKNESS,
+        "energy_card": 7,
+        "core": [138, 139, 140, 141, 1121, 1182, 1086, 1123, 1227, 1097, 1152, 1216, 1162],
+        "energy_count": 20,
+    },
 }
 
 
@@ -172,6 +277,54 @@ class OpponentModel:
 
         card_db = get_card_data()
 
+        archetype_signatures: dict[int, list[str]] = {
+            345: ["crustle"],
+            344: ["crustle"],
+            756: ["lillies_clefairy", "slowking", "crustle"],
+            272: ["lillies_clefairy", "slowking"],
+            184: ["lillies_clefairy", "slowking"],
+            163: ["slowking"],
+            162: ["slowking"],
+            276: ["slowking"],
+            1188: ["slowking"],
+            1219: ["crustle"],
+            131: ["dragapult_dusknoir"],
+            132: ["dragapult_dusknoir"],
+            133: ["dragapult_dusknoir"],
+            326: ["dragapult_blaziken"],
+            324: ["dragapult_blaziken"],
+            400: ["rockets_mewtwo"],
+            401: ["rockets_mewtwo"],
+            431: ["rockets_mewtwo"],
+            292: ["ns_zoroark"],
+            293: ["ns_zoroark"],
+            906: ["ns_zoroark"],
+            79: ["incineroar_ex"],
+            78: ["incineroar_ex"],
+            77: ["incineroar_ex"],
+            63: ["raging_bolt_ex"],
+            37: ["raging_bolt_ex"],
+            150: ["hydrapple_ex"],
+            93: ["hydrapple_ex"],
+            42: ["hydrapple_ex"],
+            190: ["archaludon_ex"],
+            169: ["archaludon_ex"],
+            839: ["archaludon_ex"],
+            40: ["greninja_ex"],
+            34: ["greninja_ex"],
+            33: ["greninja_ex"],
+            176: ["terapagos_ex"],
+            124: ["terapagos_ex"],
+            125: ["terapagos_ex"],
+            107: ["palafin_ex"],
+            105: ["palafin_ex"],
+            51: ["palafin_ex"],
+            138: ["dark_trinity_ex"],
+            139: ["dark_trinity_ex"],
+            140: ["dark_trinity_ex"],
+            141: ["dark_trinity_ex"],
+        }
+
         for card_id in new_cards:
             cd = card_db.get(card_id)
             if cd is None:
@@ -180,6 +333,11 @@ class OpponentModel:
             e_int = int(cd.energyType) if cd.energyType is not None else 0
             if e_int in (1, 2, 3, 4, 5, 6, 7, 8):
                 self._observed_energy_types[e_int] = self._observed_energy_types.get(e_int, 0) + 1
+
+            if card_id in archetype_signatures:
+                for arch_name in archetype_signatures[card_id]:
+                    if arch_name in self.archetype_log_probs:
+                        self.archetype_log_probs[arch_name] += 3.0
 
             for name, spec in DECK_ARCHETYPES.items():
                 if card_id in spec["core"]:

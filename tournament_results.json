@@ -1,0 +1,119 @@
+{
+  "Lillie's Clefairy (#1st)": {
+    "wins": 3,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.6
+  },
+  "Dragapult Dusknoir (#2nd)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "Dragapult (#3rd)": {
+    "wins": 4,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.8
+  },
+  "Slowking (#4th)": {
+    "wins": 2,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.4
+  },
+  "Crustle (#5th)": {
+    "wins": 2,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.4
+  },
+  "Dragapult Blaziken (#6th)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "Rocket's Mewtwo (#7th)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "N's Zoroark (#10th)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "Incineroar ex (#9th)": {
+    "wins": 4,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.8
+  },
+  "Raging Bolt ex (#11th)": {
+    "wins": 3,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.6
+  },
+  "Hydrapple ex (#12th)": {
+    "wins": 0,
+    "draws": 0,
+    "errors": 5,
+    "played": 5,
+    "win_rate": 0.0
+  },
+  "Archaludon ex (#13th)": {
+    "wins": 0,
+    "draws": 0,
+    "errors": 5,
+    "played": 5,
+    "win_rate": 0.0
+  },
+  "Greninja ex (#14th)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "Terapagos ex (#15th)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "Palafin ex (#16th)": {
+    "wins": 5,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 1.0
+  },
+  "Dark Trinity ex (#17th)": {
+    "wins": 4,
+    "draws": 0,
+    "errors": 0,
+    "played": 5,
+    "win_rate": 0.8
+  },
+  "_overall": {
+    "wins": 57,
+    "played": 80,
+    "win_rate": 0.7125
+  }
+}
