@@ -40,6 +40,7 @@ SUBMIT_FILES=(
     agent/main.py
     agent/policy.py
     agent/search.py
+    agent/strategies.py
     agent/evaluate.py
     agent/features.py
     agent/network.py
@@ -89,7 +90,7 @@ cmd_pack() {
     info "Package created: $SUBMISSION_NAME.tar.gz ($SIZE)"
     info ""
     info "Contents:"
-    tar tzf "$PROJECT_ROOT/$SUBMISSION_NAME.tar.gz" | head -20
+    tar tzf "$PROJECT_ROOT/$SUBMISSION_NAME.tar.gz" | head -20 || true
 }
 
 # ── Check command — run smoke test ──
