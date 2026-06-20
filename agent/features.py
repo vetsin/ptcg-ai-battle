@@ -92,8 +92,8 @@ def encode_state(state: State) -> list[float]:
     for i, mon in enumerate(opp.bench[:5]):
         features[95 + i * 1] = float(mon.hp) / 300.0 if mon.maxHp > 0 else 0.0
 
-    my_prize_remaining = len([p for p in me.prize if p is not None])
-    opp_prize_remaining = len([p for p in opp.prize if p is not None])
+    my_prize_remaining = len(me.prize)
+    opp_prize_remaining = len(opp.prize)
     features[100] = float(my_prize_remaining) / 6.0
     features[101] = float(6 - my_prize_remaining) / 6.0
     features[102] = float(opp_prize_remaining) / 6.0

@@ -407,7 +407,11 @@ def run_ab_training(
         config = ABTrainConfig()
 
     if config.device == "auto":
-        config.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # The model is tiny (hidden_dim<=256, a few thousand samples/iteration) —
+        # GPU kernel-launch/sync overhead through WSL2's passthrough layer makes
+        # training *slower* than CPU here (measured: single epochs stalling for
+        # minutes on GPU vs whole iterations finishing in ~30s on CPU).
+        config.device = "cpu"
 
     our_deck = load_deck_csv()
 

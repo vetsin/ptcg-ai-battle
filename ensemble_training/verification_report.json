@@ -1,0 +1,42 @@
+{
+  "mega_lucario_ex": {
+    "slightly_smart_agent": 0.85,
+    "random_agent": 0.55,
+    "own_specialist": 0.5
+  },
+  "crustle": {
+    "slightly_smart_agent": 0.5,
+    "random_agent": 0.45,
+    "own_specialist": 0.6
+  },
+  "raging_bolt_ex": {
+    "slightly_smart_agent": 0.25,
+    "random_agent": 0.5,
+    "own_specialist": 0.5
+  },
+  "archaludon_ex": {
+    "slightly_smart_agent": 0.6,
+    "random_agent": 0.55,
+    "own_specialist": 0.85
+  },
+  "terapagos_ex": {
+    "slightly_smart_agent": 0.8,
+    "random_agent": 0.35,
+    "own_specialist": 0.2
+  },
+  "dark_trinity_ex": {
+    "slightly_smart_agent": 0.95,
+    "random_agent": 0.95,
+    "own_specialist": 0.3
+  },
+  "greninja_ex": {
+    "slightly_smart_agent": 0.8,
+    "random_agent": 0.25,
+    "own_specialist": 0.75
+  },
+  "dragapult_dusknoir": {
+    "slightly_smart_agent": 0.7,
+    "random_agent": 0.65,
+    "own_specialist": 0.55
+  }
+}

@@ -11,20 +11,35 @@ from cg.api import (
 )
 from cg.api import search_begin, search_step, search_end
 from agent.evaluate import evaluate_state, get_card_data, get_attack_data
-from agent.policy import choose_action
+from agent.policy import choose_action, get_my_strategy
 from agent.opponent_model import get_opponent_model
 from agent.features import encode_observation
+from agent.strategies import strategy_priors
 
-_value_model = None
-_value_device = "cpu"
-_value_net_enabled = False
+# Per-player value net (MULTI_DECK_ENSEMBLE_PLAN.md Phase B: two different
+# specialist checkpoints play each other in the same process, so the model
+# must be indexed by player like _my_strategy already is).
+_value_model: list = [None, None]
+_value_device: list = ["cpu", "cpu"]
+_value_net_enabled: list = [False, False]
 _value_net_blend = 0.5
 _value_net_scale = 400.0
 
+# Full PUCT (MEGA_LUCARIO_STRATEGY_PLAN.md §4). Gated on get_my_strategy() being
+# set, so decks without a strategy profile keep the original UCB1 search exactly.
+# c_puct is in heuristic-score units (see _select_root_child_puct), not the
+# small O(1) AlphaZero convention.
+_c_puct = 20.0
+_strategy_prior_weight = 0.5
 
-def load_value_model(path: str | None = None, device: str = "cpu") -> None:
+
+def load_value_model(path: str | None = None, device: str = "cpu", index: int | None = None) -> None:
     """Load a trained value head to replace MCTS rollouts (see SELFPLAY_PLAN.md A.6)."""
-    global _value_model, _value_device, _value_net_enabled
+    if index is None:
+        load_value_model(path, device, index=0)
+        load_value_model(path, device, index=1)
+        return
+
     if path is None:
         for candidate in [
             "model.pt",
@@ -37,19 +52,19 @@ def load_value_model(path: str | None = None, device: str = "cpu") -> None:
                 path = candidate
                 break
     if path is None or not os.path.exists(path):
-        _value_net_enabled = False
+        _value_net_enabled[index] = False
         return
     from agent.network import load_model
     try:
-        _value_model = load_model(path, device=device)
-        _value_device = device
-        _value_net_enabled = True
+        _value_model[index] = load_model(path, device=device)
+        _value_device[index] = device
+        _value_net_enabled[index] = True
     except Exception:
-        _value_net_enabled = False
+        _value_net_enabled[index] = False
 
 
 def _value_net_signal(obs: Observation, my_index: int) -> float | None:
-    if not _value_net_enabled or _value_model is None:
+    if not _value_net_enabled[my_index] or _value_model[my_index] is None:
         return None
     if obs is None or obs.current is None or obs.select is None:
         return None
@@ -60,7 +75,7 @@ def _value_net_signal(obs: Observation, my_index: int) -> float | None:
         if not state_features or not option_features:
             return None
         from agent.network import score_actions
-        _, value = score_actions(_value_model, state_features, option_features, device=_value_device)
+        _, value = score_actions(_value_model[my_index], state_features, option_features, device=_value_device[my_index])
         return value
     except Exception:
         return None
@@ -80,6 +95,75 @@ def _static_value_eval(observation: Observation, my_index: int) -> float | None:
     heuristic = evaluate_state(obs.current, my_index)
     scaled_net = (net_signal - 0.5) * 2.0 * _value_net_scale
     return (1.0 - _value_net_blend) * heuristic + _value_net_blend * scaled_net
+
+
+def _compute_root_priors(root_obs: Observation, my_index: int) -> list[float]:
+    options = root_obs.select.option
+    n = len(options)
+    state = root_obs.current
+
+    net_scores = None
+    if _value_net_enabled[my_index] and _value_model[my_index] is not None:
+        try:
+            state_features, option_features = encode_observation(root_obs)
+            if state_features and option_features:
+                from agent.network import score_actions
+                scores, _ = score_actions(_value_model[my_index], state_features, option_features, device=_value_device[my_index])
+                if len(scores) == n:
+                    net_scores = scores
+        except Exception:
+            net_scores = None
+
+    strat_priors = None
+    strategy = get_my_strategy(my_index)
+    if strategy is not None and state is not None:
+        strat_priors = strategy_priors(options, state, my_index, strategy)
+
+    if strat_priors is not None and net_scores is not None:
+        priors = [
+            _strategy_prior_weight * strat_priors[i] + (1.0 - _strategy_prior_weight) * net_scores[i]
+            for i in range(n)
+        ]
+    elif strat_priors is not None:
+        priors = strat_priors
+    elif net_scores is not None:
+        priors = net_scores
+    else:
+        priors = [1.0 / n] * n
+
+    total = sum(priors)
+    if total <= 0:
+        return [1.0 / n] * n
+    return [p / total for p in priors]
+
+
+def _select_root_child_puct(child_stats: dict[int, dict], c_puct: float = 1.5) -> int | None:
+    total_visits = sum(s["visits"] for s in child_stats.values())
+    if total_visits == 0:
+        return next(iter(child_stats))
+
+    best_idx = None
+    best_score = -float("inf")
+
+    for idx, stats in child_stats.items():
+        if stats["visits"] == 0:
+            return idx
+
+        # Keep the exploit term in the same heuristic-score units as the plain
+        # UCB1 path (hundreds-to-thousands) instead of squashing into [-1, 1] —
+        # tanh-normalizing was found to let the exploration term swamp clear
+        # tactical advantages (verified regression vs random_agent below
+        # break-even). c_puct is calibrated to that scale, not the AlphaZero
+        # O(1) convention.
+        prior = stats.get("prior", 1.0 / len(child_stats))
+        explore = c_puct * prior * (total_visits ** 0.5) / (1 + stats["visits"])
+        score = stats["value"] + explore
+
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+
+    return best_idx
 
 
 def mcts_search(
@@ -132,9 +216,17 @@ def mcts_search(
     n_options = len(root_obs.select.option)
     root_value = evaluate_state(obs.current, my_index)
 
+    strategy = get_my_strategy(my_index)
+    root_priors: list[float] | None = None
+    if strategy is not None:
+        root_priors = _compute_root_priors(root_obs, my_index)
+        expand_order = sorted(range(n_options), key=lambda i: -root_priors[i])[:min(n_options, 10)]
+    else:
+        expand_order = list(range(min(n_options, 10)))
+
     child_stats: dict[int, dict] = {}
 
-    for i in range(min(n_options, 10)):
+    for i in expand_order:
         action = _compute_action_for_option(root_obs, i)
         if action is None:
             continue
@@ -164,6 +256,7 @@ def mcts_search(
             "observation": child_obs,
             "is_terminal": child_obs.select is None or child_obs.current is None or child_obs.current.result != -1,
             "outcome_group": outcome_group,
+            "prior": root_priors[i] if root_priors is not None else 1.0 / max(len(expand_order), 1),
         }
 
     if not child_stats:
@@ -186,7 +279,10 @@ def mcts_search(
         if elapsed_ms > max_time:
             break
 
-        best_idx = _select_root_child(child_stats, root_value, exploration)
+        if strategy is not None:
+            best_idx = _select_root_child_puct(child_stats, c_puct=_c_puct)
+        else:
+            best_idx = _select_root_child(child_stats, root_value, exploration)
         if best_idx is None:
             break
 
@@ -230,8 +326,8 @@ def _adaptive_sim_budget(obs: Observation, base: int) -> int:
         return base
     me = obs.current.players[obs.current.yourIndex]
     opp = obs.current.players[1 - obs.current.yourIndex]
-    my_taken = 6 - len([p for p in me.prize if p is not None])
-    opp_taken = 6 - len([p for p in opp.prize if p is not None])
+    my_taken = 6 - len(me.prize)
+    opp_taken = 6 - len(opp.prize)
     opp_active = opp.active[0] if opp.active else None
 
     if opp_taken >= 3 or my_taken >= 3:
@@ -254,8 +350,8 @@ def _adaptive_time_budget(obs: Observation, base_ms: float) -> float:
         return base_ms
     me = obs.current.players[obs.current.yourIndex]
     opp = obs.current.players[1 - obs.current.yourIndex]
-    my_taken = 6 - len([p for p in me.prize if p is not None])
-    opp_taken = 6 - len([p for p in opp.prize if p is not None])
+    my_taken = 6 - len(me.prize)
+    opp_taken = 6 - len(opp.prize)
 
     if opp_taken >= 3 or my_taken >= 3:
         return base_ms * 1.5
@@ -267,8 +363,8 @@ def _adaptive_rollout_depth(obs: Observation, base: int) -> int:
         return base
     me = obs.current.players[obs.current.yourIndex]
     opp = obs.current.players[1 - obs.current.yourIndex]
-    my_taken = 6 - len([p for p in me.prize if p is not None])
-    opp_taken = 6 - len([p for p in opp.prize if p is not None])
+    my_taken = 6 - len(me.prize)
+    opp_taken = 6 - len(opp.prize)
 
     if opp_taken >= 3 or my_taken >= 3:
         return base + 5
@@ -335,7 +431,7 @@ def _select_root_child(child_stats: dict[int, dict], root_value: float, explorat
 
 
 def _rollout_from_node(search_id: int, observation: Observation, my_index: int, max_depth: int = 5) -> float:
-    if _value_net_enabled:
+    if _value_net_enabled[my_index]:
         net_eval = _static_value_eval(observation, my_index)
         if net_eval is not None:
             return net_eval
@@ -391,6 +487,10 @@ def _get_rollout_action(obs: Observation) -> list[int] | None:
             if heuristic is not None:
                 return heuristic
         else:
+            strategy = get_my_strategy(obs.current.yourIndex) if obs.current is not None else None
+            if strategy is not None and obs.current is not None:
+                priors = strategy_priors(select.option, obs.current, obs.current.yourIndex, strategy)
+                return [random.choices(range(n), weights=priors, k=1)[0]]
             return [random.randint(0, n - 1)]
 
     if select.minCount > 0:

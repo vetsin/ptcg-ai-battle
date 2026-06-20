@@ -23,19 +23,54 @@ from cg.api import (
 from cg.api import all_card_data, all_attack
 from agent.evaluate import get_card_data, get_attack_data, evaluate_state, _can_use_attack, _has_ex_immunity, _effective_damage
 from agent.features import encode_observation
+from agent.strategies import StrategyProfile, strategy_action_bias
 
 _card_db_cache: dict[int, CardData] | None = None
-_policy_model = None
-_policy_device = "cpu"
-_policy_enabled = False
+# Per-player policy net (MULTI_DECK_ENSEMBLE_PLAN.md Phase B: two different
+# specialist checkpoints play each other in the same process, so the model
+# must be indexed by player like _my_strategy already is).
+_policy_model: list = [None, None]
+_policy_device: list = ["cpu", "cpu"]
+_policy_enabled: list = [False, False]
 _policy_blend = 0.7
 _mcts_enabled = True
 _mcts_max_time_ms = 1500.0
 _mcts_min_options = 4
 
+# Strategy-guided nudging (MEGA_LUCARIO_STRATEGY_PLAN.md, generalized for
+# multiple decks in MULTI_DECK_ENSEMBLE_PLAN.md). Indexed per-player so two
+# different strategy-bearing decks can play each other with each side getting
+# its own bias — gated per-slot so a deck with no profile (index is None)
+# behaves exactly as before.
+_my_strategy: list[StrategyProfile | None] = [None, None]
+STRATEGY_BIAS_WEIGHT = 1.0
 
-def load_policy_model(path: str | None = None, device: str = "cpu"):
-    global _policy_model, _policy_device, _policy_enabled
+
+def set_my_strategy(profile: StrategyProfile | None, index: int | None = None) -> None:
+    global _my_strategy
+    if index is None:
+        _my_strategy = [profile, profile]
+    else:
+        _my_strategy[index] = profile
+
+
+def get_my_strategy(my_index: int) -> StrategyProfile | None:
+    return _my_strategy[my_index]
+
+
+def _strategy_bias(opt: Option, state: State, my_index: int) -> float:
+    profile = _my_strategy[my_index]
+    if profile is None:
+        return 0.0
+    return STRATEGY_BIAS_WEIGHT * strategy_action_bias(opt, state, my_index, profile)
+
+
+def load_policy_model(path: str | None = None, device: str = "cpu", index: int | None = None):
+    if index is None:
+        load_policy_model(path, device, index=0)
+        load_policy_model(path, device, index=1)
+        return
+
     if path is None:
         for candidate in [
             "model.pt",
@@ -48,20 +83,54 @@ def load_policy_model(path: str | None = None, device: str = "cpu"):
                 path = candidate
                 break
     if path is None or not os.path.exists(path):
-        _policy_enabled = False
+        _policy_enabled[index] = False
         return
 
     from agent.network import load_model
     try:
-        _policy_model = load_model(path, device=device)
-        _policy_device = device
-        _policy_enabled = True
+        _policy_model[index] = load_model(path, device=device)
+        _policy_device[index] = device
+        _policy_enabled[index] = True
     except Exception:
-        _policy_enabled = False
+        _policy_enabled[index] = False
 
 
 def _card_db() -> dict[int, CardData]:
     return get_card_data()
+
+
+def _resolve_card_id(state: State, opt: Option, my_index: int) -> int | None:
+    """For SelectType.CARD options the engine never populates Option.cardId —
+    verified empirically across SETUP_ACTIVE_POKEMON, SETUP_BENCH_POKEMON,
+    SWITCH, TO_ACTIVE, and DISCARD contexts. Per the OptionType.CARD field
+    spec (area/index/playerIndex), the real card lives at
+    state.players[opt.playerIndex].<area>[opt.index] instead."""
+    if opt.index is None:
+        return None
+    owner = opt.playerIndex if opt.playerIndex is not None else my_index
+    if owner < 0 or owner >= len(state.players):
+        return None
+    player = state.players[owner]
+    # OptionType.PLAY at the MAIN select level has no area field at all (the
+    # spec just says "index within the hand") — area=None means hand there.
+    if opt.area is None or opt.area == AreaType.HAND:
+        hand = player.hand
+        if hand and opt.index < len(hand):
+            return hand[opt.index].id
+    elif opt.area == AreaType.ACTIVE:
+        mon = player.active[0] if player.active else None
+        return mon.id if mon else None
+    elif opt.area == AreaType.BENCH:
+        if player.bench and opt.index < len(player.bench):
+            return player.bench[opt.index].id
+    elif opt.area == AreaType.DISCARD:
+        if player.discard and opt.index < len(player.discard):
+            return player.discard[opt.index].id
+    elif opt.area == AreaType.PRIZE:
+        if opt.index < len(player.prize):
+            card = player.prize[opt.index]
+            return card.id if card else None
+    return None
 
 
 def choose_action(obs: Observation, use_model: bool = True) -> list[int]:
@@ -96,8 +165,8 @@ def choose_action(obs: Observation, use_model: bool = True) -> list[int]:
     heuristic_action = _choose_action_heuristic(obs, select, state, my_index)
 
     action = heuristic_action
-    if use_model and _policy_enabled and _policy_model is not None and select_type in (SelectType.MAIN, SelectType.ATTACK, SelectType.CARD):
-        model_action = _choose_action_model(obs, select, heuristic_action)
+    if use_model and _policy_enabled[my_index] and _policy_model[my_index] is not None and select_type in (SelectType.MAIN, SelectType.ATTACK, SelectType.CARD):
+        model_action = _choose_action_model(obs, select, heuristic_action, my_index)
         if model_action is not None:
             action = model_action
 
@@ -109,7 +178,7 @@ def choose_action(obs: Observation, use_model: bool = True) -> list[int]:
     return action
 
 
-def _choose_action_model(obs: Observation, select: SelectData, heuristic_action: list[int]) -> list[int] | None:
+def _choose_action_model(obs: Observation, select: SelectData, heuristic_action: list[int], my_index: int) -> list[int] | None:
     try:
         state_features, option_features = encode_observation(obs)
         if not option_features or not state_features:
@@ -117,10 +186,10 @@ def _choose_action_model(obs: Observation, select: SelectData, heuristic_action:
 
         from agent.network import score_actions
         scores, value = score_actions(
-            _policy_model,
+            _policy_model[my_index],
             state_features,
             option_features,
-            device=_policy_device,
+            device=_policy_device[my_index],
         )
 
         num_options = len(option_features)
@@ -281,10 +350,10 @@ def _score_main_option(opt: Option, state: State, my_index: int) -> float:
         return 10.0
 
     if opt.type == OptionType.PLAY:
-        cd = card_db.get(opt.cardId, None) if opt.cardId else None
-        if cd is None:
-            return 0.0
-        return _score_play_card(cd, opt, state, my_index)
+        cid = _resolve_card_id(state, opt, my_index)
+        cd = card_db.get(cid) if cid else None
+        base = 0.0 if cd is None else _score_play_card(cd, opt, state, my_index)
+        return base + _strategy_bias(opt, state, my_index)
 
     if opt.type == OptionType.ATTACH:
         return _score_attach(opt, state, my_index)
@@ -340,6 +409,8 @@ def _score_attack_option(opt: Option, state: State, my_index: int) -> float:
         score += 200.0
     elif damage_ratio >= 0.5:
         score += 50.0
+
+    score += _strategy_bias(opt, state, my_index)
 
     return score
 
@@ -431,13 +502,16 @@ def _score_attach(opt: Option, state: State, my_index: int) -> float:
     elif opt.inPlayArea == AreaType.BENCH:
         score -= 5.0
 
+    score += _strategy_bias(opt, state, my_index)
+
     return score
 
 
 def _score_evolve(opt: Option, state: State, my_index: int) -> float:
     score = 25.0
     card_db = _card_db()
-    cd = card_db.get(opt.cardId) if opt.cardId else None
+    cid = _resolve_card_id(state, opt, my_index)
+    cd = card_db.get(cid) if cid else None
     if cd:
         if cd.ex:
             score += 10.0
@@ -445,6 +519,9 @@ def _score_evolve(opt: Option, state: State, my_index: int) -> float:
             score += 15.0
         elif cd.stage1:
             score += 5.0
+
+    score += _strategy_bias(opt, state, my_index)
+
     return score
 
 
@@ -491,6 +568,8 @@ def _score_retreat(opt: Option, state: State, my_index: int) -> float:
     if my_active.hp > 0 and my_active.hp <= 30:
         score += 50.0
 
+    score += _strategy_bias(opt, state, my_index)
+
     return score
 
 
@@ -524,6 +603,8 @@ def _handle_attack(obs: Observation, select: SelectData, state: State, my_index:
                 score += raw_damage * 0.5
         else:
             score += 10.0
+
+        score += _strategy_bias(opt, state, my_index)
 
         if score > best_score:
             best_score = score
@@ -606,7 +687,8 @@ def _select_setup_pokemon(options: list[Option], state: State, my_index: int, pr
     card_db = _card_db()
     scored = []
     for i, opt in enumerate(options):
-        cd = card_db.get(opt.cardId) if opt.cardId else None
+        cid = _resolve_card_id(state, opt, my_index)
+        cd = card_db.get(cid) if cid else None
         score = 0.0
         if cd:
             if prefer_active:
@@ -636,36 +718,39 @@ def _select_switch(options: list[Option], state: State, my_index: int) -> list[i
     card_db = _card_db()
 
     facing_wall = opp_active is not None and _has_ex_immunity(opp_active)
+    opp_active_cd = card_db.get(opp_active.id) if opp_active else None
+    opp_active_is_ex = opp_active_cd is not None and (opp_active_cd.ex or opp_active_cd.megaEx)
+    profile = _my_strategy[my_index]
 
     scored = []
     for i, opt in enumerate(options):
         score = 0.0
-        if opt.area == AreaType.BENCH:
-            for mon in me.bench:
-                if mon.id == opt.cardId:
-                    bcd = card_db.get(mon.id)
-                    if bcd:
-                        if facing_wall and not bcd.ex and not bcd.megaEx and bcd.attacks:
-                            score += 100.0
-                        if bcd.ex or bcd.megaEx:
-                            score += 10.0
-                        if mon.hp == mon.maxHp:
-                            score += 20.0
+        if opt.area == AreaType.BENCH and opt.index is not None and opt.index < len(me.bench):
+            mon = me.bench[opt.index]
+            bcd = card_db.get(mon.id)
+            if bcd:
+                if facing_wall and not bcd.ex and not bcd.megaEx and bcd.attacks:
+                    score += 100.0
+                if bcd.ex or bcd.megaEx:
+                    score += 10.0
+                if mon.hp == mon.maxHp:
+                    score += 20.0
+                if profile is not None and mon.id in profile.prefer_passive_wall_ids and opp_active_is_ex:
+                    score += 130.0
 
-                    has_usable_attack = False
-                    if bcd and bcd.attacks:
-                        attack_db = get_attack_data()
-                        for atk_id in bcd.attacks:
-                            atk = attack_db.get(atk_id)
-                            if atk and _can_use_attack(mon, atk):
-                                has_usable_attack = True
-                                score += atk.damage * 0.2
-                                break
-                    if has_usable_attack:
-                        score += 30.0
+            has_usable_attack = False
+            if bcd and bcd.attacks:
+                attack_db = get_attack_data()
+                for atk_id in bcd.attacks:
+                    atk = attack_db.get(atk_id)
+                    if atk and _can_use_attack(mon, atk):
+                        has_usable_attack = True
+                        score += atk.damage * 0.2
+                        break
+            if has_usable_attack:
+                score += 30.0
 
-                    score += mon.hp * 0.3
-                    break
+            score += mon.hp * 0.3
         elif opt.type == OptionType.YES:
             score -= 50.0
         scored.append((score, i))
@@ -678,7 +763,8 @@ def _select_bench_pokemon(options: list[Option], state: State, my_index: int) ->
     card_db = _card_db()
     scored = []
     for i, opt in enumerate(options):
-        cd = card_db.get(opt.cardId) if opt.cardId else None
+        cid = _resolve_card_id(state, opt, my_index)
+        cd = card_db.get(cid) if cid else None
         score = 0.0
         if cd:
             if cd.basic:
@@ -697,7 +783,8 @@ def _select_discard(options: list[Option], state: State, my_index: int, min_coun
     card_db = _card_db()
     scored = []
     for i, opt in enumerate(options):
-        cd = card_db.get(opt.cardId) if opt.cardId else None
+        cid = _resolve_card_id(state, opt, my_index)
+        cd = card_db.get(cid) if cid else None
         score = 0.0
         if cd:
             if cd.cardType == CardType.BASIC_ENERGY:
@@ -752,11 +839,10 @@ def _select_heal_target(options: list[Option], state: State, my_index: int) -> l
                 active = me.active[0]
                 if active.maxHp > 0:
                     score += (1.0 - active.hp / active.maxHp) * 50.0
-            elif opt.area == AreaType.BENCH:
-                for mon in me.bench:
-                    if mon.id == opt.cardId and mon.maxHp > 0:
-                        score += (1.0 - mon.hp / mon.maxHp) * 30.0
-                        break
+            elif opt.area == AreaType.BENCH and opt.index is not None and opt.index < len(me.bench):
+                mon = me.bench[opt.index]
+                if mon.maxHp > 0:
+                    score += (1.0 - mon.hp / mon.maxHp) * 30.0
         else:
             score -= 100.0
         scored.append((score, i))
@@ -769,7 +855,8 @@ def _select_evolution(options: list[Option], state: State, my_index: int) -> lis
     card_db = _card_db()
     scored = []
     for i, opt in enumerate(options):
-        cd = card_db.get(opt.cardId) if opt.cardId else None
+        cid = _resolve_card_id(state, opt, my_index)
+        cd = card_db.get(cid) if cid else None
         score = 0.0
         if cd:
             if cd.stage2:

@@ -65,8 +65,11 @@ def evaluate_state(state: State, my_index: int) -> float:
 
 
 def _prize_score(me: PlayerState, opp: PlayerState) -> float:
-    my_remaining = len([p for p in me.prize if p is not None])
-    opp_remaining = len([p for p in opp.prize if p is not None])
+    # Prize cards are face-down (None) to both players for virtually the whole
+    # game by design — taken prizes are removed from the list, so list length
+    # (not the non-None count) is the real "remaining" signal.
+    my_remaining = len(me.prize)
+    opp_remaining = len(opp.prize)
     my_taken = 6 - my_remaining
     opp_taken = 6 - opp_remaining
     if opp_taken >= 6:

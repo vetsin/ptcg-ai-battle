@@ -258,6 +258,7 @@ def train_policy(
     reward_weight: float = 0.5,
     value_weight: float = 0.25,
     save_path: str | None = None,
+    warm_start_path: str | None = None,
 ) -> dict:
     if len(train_data) < 5:
         return {"train_loss": [0.0], "train_acc": [0.0]}
@@ -278,6 +279,10 @@ def train_policy(
         model = PTCGPolicyNet(hidden_dim=hidden_dim).to(device)
     else:
         model = PTCGSimpleNet(hidden_dim=hidden_dim).to(device)
+
+    if warm_start_path:
+        checkpoint = torch.load(warm_start_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)

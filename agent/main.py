@@ -2,9 +2,10 @@ import os
 import random
 
 from cg.api import Observation, to_observation_class, SelectType, SelectContext
-from agent.policy import choose_action
+from agent.policy import choose_action, set_my_strategy
 from agent.deck import load_deck_csv, get_default_deck, save_deck_csv
 from agent.opponent_model import reset_opponent_models
+from agent.strategies import STRATEGIES, classify_my_deck
 
 _deck_cache: list[int] | None = None
 _last_game_id: int = -1
@@ -45,6 +46,7 @@ def agent(obs_dict: dict) -> list[int]:
     if not obs_dict or 'select' not in obs_dict:
         deck = read_deck()
         reset_opponent_models()
+        set_my_strategy(STRATEGIES.get(classify_my_deck(deck)))
         _last_game_id = -1
         return deck
 

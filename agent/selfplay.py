@@ -76,37 +76,49 @@ def run_game(
     game_id: str | None = None,
     collect_trajectory: bool = True,
     trajectory_player: int = 0,
-) -> GameTrajectory:
+    collect_both: bool = False,
+) -> GameTrajectory | tuple[GameTrajectory, GameTrajectory]:
+    """Play one game. By default records only `trajectory_player`'s steps and
+    returns a single GameTrajectory (existing behavior, unchanged). Pass
+    `collect_both=True` to record both players' steps from the same playthrough
+    and get back a `(trajectory0, trajectory1)` tuple instead — used by
+    agent/ensemble_train.py so a cross-archetype matchup yields training data
+    for both specialists without replaying the game twice."""
     if game_id is None:
         game_id = f"game_{int(time.time() * 1000)}"
 
+    from agent.policy import set_my_strategy
+    from agent.strategies import STRATEGIES, classify_my_deck
+    set_my_strategy(STRATEGIES.get(classify_my_deck(deck0)), index=0)
+    set_my_strategy(STRATEGIES.get(classify_my_deck(deck1)), index=1)
+
     obs_dict, start_data = battle_start(deck0, deck1)
 
-    if obs_dict is None:
+    def _empty(my_index: int) -> GameTrajectory:
         return GameTrajectory(
             game_id=game_id,
             player0_deck=deck0,
             player1_deck=deck1,
-            my_index=trajectory_player,
+            my_index=my_index,
             outcome=-1,
             my_prize_taken=0,
             opp_prize_taken=0,
             num_turns=0,
         )
 
+    if obs_dict is None:
+        if collect_both:
+            return _empty(0), _empty(1)
+        return _empty(trajectory_player)
+
     agents = [agent0_fn, agent1_fn]
     decks = [deck0, deck1]
 
-    trajectory = GameTrajectory(
-        game_id=game_id,
-        player0_deck=deck0,
-        player1_deck=deck1,
-        my_index=trajectory_player,
-        outcome=-1,
-        my_prize_taken=0,
-        opp_prize_taken=0,
-        num_turns=0,
-    )
+    if collect_both:
+        trajectories = [_empty(0), _empty(1)]
+    else:
+        trajectories = None
+        trajectory = _empty(trajectory_player)
 
     from agent.evaluate import evaluate_state
 
@@ -114,8 +126,20 @@ def run_game(
         obs = to_observation_class(obs_dict)
 
         if obs.current is not None and obs.current.result != -1:
-            trajectory.outcome = obs.current.result
-            trajectory.num_turns = obs.current.turn
+            outcome = obs.current.result
+            num_turns = obs.current.turn
+            if collect_both:
+                for t in trajectories:
+                    t.outcome = outcome
+                    t.num_turns = num_turns
+                    _compute_game_stats(t)
+                try:
+                    battle_finish()
+                except Exception:
+                    pass
+                return trajectories[0], trajectories[1]
+            trajectory.outcome = outcome
+            trajectory.num_turns = num_turns
             _compute_game_stats(trajectory)
             try:
                 battle_finish()
@@ -133,18 +157,23 @@ def run_game(
             except Exception:
                 action = _random_action(obs)
 
-        if collect_trajectory and current_player == trajectory_player and obs.select is not None and obs.current is not None:
-            step_data = TrajectoryStep(
-                obs_dict=obs_dict,
-                action=action,
-                select_type=int(obs.select.type),
-                select_context=int(obs.select.context),
-                num_options=len(obs.select.option),
-                state_score=evaluate_state(obs.current, obs.current.yourIndex),
-                turn=obs.current.turn,
-                my_index=obs.current.yourIndex,
-            )
-            trajectory.steps.append(step_data)
+        if collect_trajectory and obs.select is not None and obs.current is not None:
+            should_record = current_player == trajectory_player if not collect_both else True
+            if should_record:
+                step_data = TrajectoryStep(
+                    obs_dict=obs_dict,
+                    action=action,
+                    select_type=int(obs.select.type),
+                    select_context=int(obs.select.context),
+                    num_options=len(obs.select.option),
+                    state_score=evaluate_state(obs.current, obs.current.yourIndex),
+                    turn=obs.current.turn,
+                    my_index=obs.current.yourIndex,
+                )
+                if collect_both:
+                    trajectories[current_player].steps.append(step_data)
+                else:
+                    trajectory.steps.append(step_data)
 
         try:
             obs_dict = battle_select(action)
@@ -153,6 +182,8 @@ def run_game(
                 battle_finish()
             except Exception:
                 pass
+            if collect_both:
+                return trajectories[0], trajectories[1]
             return trajectory
 
     try:
@@ -160,6 +191,8 @@ def run_game(
     except Exception:
         pass
 
+    if collect_both:
+        return trajectories[0], trajectories[1]
     return trajectory
 
 
@@ -302,8 +335,8 @@ def export_trajectories_jsonl(
                     "action": step.action,
                     "state_score": step.state_score,
                     "turn": step.turn,
-                    "my_prize_remaining": len([p for p in me.prize if p is not None]) if me else 6,
-                    "opp_prize_remaining": len([p for p in opp.prize if p is not None]) if opp else 6,
+                    "my_prize_remaining": len(me.prize) if me else 6,
+                    "opp_prize_remaining": len(opp.prize) if opp else 6,
                     "my_active_hp": me.active[0].hp if me and me.active and me.active[0] else 0,
                     "opp_active_hp": opp.active[0].hp if opp and opp.active and opp.active[0] else 0,
                     "my_bench_count": len(me.bench) if me else 0,
@@ -347,8 +380,8 @@ def export_training_data(
             if current:
                 me = current.players[step.my_index]
                 opp = current.players[1 - step.my_index]
-                record["my_prize_remaining"] = len([p for p in me.prize if p is not None])
-                record["opp_prize_remaining"] = len([p for p in opp.prize if p is not None])
+                record["my_prize_remaining"] = len(me.prize)
+                record["opp_prize_remaining"] = len(opp.prize)
                 record["my_active_hp"] = me.active[0].hp if me.active and me.active[0] else 0
                 record["opp_active_hp"] = opp.active[0].hp if opp.active and opp.active[0] else 0
                 record["my_bench_count"] = len(me.bench)
@@ -445,8 +478,8 @@ def _compute_game_stats(trajectory: GameTrajectory):
     if last_obs.current:
         me = last_obs.current.players[my_index]
         opp = last_obs.current.players[1 - my_index]
-        trajectory.my_prize_taken = 6 - len([p for p in me.prize if p is not None])
-        trajectory.opp_prize_taken = 6 - len([p for p in opp.prize if p is not None])
+        trajectory.my_prize_taken = 6 - len(me.prize)
+        trajectory.opp_prize_taken = 6 - len(opp.prize)
 
     if trajectory.outcome == trajectory.my_index:
         trajectory.reward = 1.0
